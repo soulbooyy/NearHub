@@ -1,7 +1,7 @@
 package com.hmdp.utils;
 
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
@@ -13,7 +13,6 @@ import java.util.UUID;
 /**
  * 业务层滑动窗口限流（Redis ZSET）
  */
-@Slf4j
 @Component
 public class SlidingWindowRateLimiter {
 
@@ -36,15 +35,23 @@ public class SlidingWindowRateLimiter {
      */
     public boolean tryAcquire(String key, long windowMs, int maxRequests) {
         long now = System.currentTimeMillis();
-        String member = now + "-" + UUID.randomUUID().toString().substring(0, 8);
-        Long r = stringRedisTemplate.execute(
-                SCRIPT,
-                Collections.singletonList(key),
-                String.valueOf(now),
-                String.valueOf(windowMs),
-                String.valueOf(maxRequests),
-                member
-        );
-        return r != null && r == 1L;
+        String member = now + "-" + UUID.randomUUID();
+        Long result;
+        try {
+            result = stringRedisTemplate.execute(
+                    SCRIPT,
+                    Collections.singletonList(key),
+                    String.valueOf(now),
+                    String.valueOf(windowMs),
+                    String.valueOf(maxRequests),
+                    member
+            );
+        } catch (DataAccessException e) {
+            throw new RateLimitUnavailableException("Sliding window Redis operation failed", e);
+        }
+        if (result == null || (result != 0L && result != 1L)) {
+            throw new RateLimitUnavailableException("Unexpected sliding window result: " + result);
+        }
+        return result == 1L;
     }
 }

@@ -5,11 +5,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
+import com.hmdp.event.ShopUpdatedEvent;
 import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.MultiLevelCacheService;
 import com.hmdp.utils.SystemConstants;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResult;
 import org.springframework.data.geo.GeoResults;
@@ -20,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import javax.annotation.PostConstruct;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -46,11 +50,25 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     @Resource
     private MultiLevelCacheService multiLevelCache;
 
+    @Resource
+    private ApplicationEventPublisher events;
+
+    @Value("${cache.shop.redis-logical-ttl-seconds:300}")
+    private long redisLogicalTtlSeconds;
+
+    @PostConstruct
+    public void validateCacheConfiguration() {
+        if (redisLogicalTtlSeconds <= 0) {
+            throw new IllegalArgumentException("cache.shop.redis-logical-ttl-seconds must be > 0");
+        }
+    }
+
     @Override
     public Result queryById(Long id) {
         // 多级缓存：Caffeine(L1 JVM) → Redis逻辑过期(L2) → MySQL(L3)
         Shop shop = multiLevelCache
-                .queryWithMultiLevel(CACHE_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
+                .queryWithMultiLevel(CACHE_SHOP_KEY, id, Shop.class, this::getById,
+                        redisLogicalTtlSeconds, TimeUnit.SECONDS);
 
         if (shop == null) {
             return Result.fail("店铺不存在！");
@@ -59,7 +77,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     /**
-     * 黑马原版读路径对照：仅 Redis → MySQL（无 Caffeine / 无网关 L1）
+     * 黑马原版读路径对照：仅 Redis → MySQL（无 Caffeine）
      */
     @Override
     public Result queryByIdHeimaRedis(Long id) {
@@ -72,16 +90,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Result update(Shop shop) {
         Long id = shop.getId();
         if (id == null) {
             return Result.fail("店铺id不能为空");
         }
-        // 1.更新数据库
-        updateById(shop);
-        // 2.删除多级缓存（Caffeine + Redis）
-        multiLevelCache.evict(CACHE_SHOP_KEY, id);
+        if (!updateById(shop)) {
+            return Result.fail("店铺不存在或更新失败");
+        }
+        // Listener runs only after the enclosing transaction successfully commits.
+        events.publishEvent(new ShopUpdatedEvent(id));
         return Result.ok();
     }
 

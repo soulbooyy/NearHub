@@ -36,7 +36,7 @@ public class ShopController {
     }
 
     /**
-     * 读链路压测对照：黑马原版 Redis → MySQL（不含 Caffeine / 网关 L1）
+     * 读链路压测对照：黑马原版 Redis → MySQL（不含 Caffeine）
      */
     @GetMapping("/benchmark/redis/{id}")
     public Result queryShopByIdHeimaRedis(@PathVariable("id") Long id) {

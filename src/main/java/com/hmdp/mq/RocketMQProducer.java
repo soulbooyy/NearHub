@@ -2,11 +2,14 @@ package com.hmdp.mq;
 
 import cn.hutool.json.JSONUtil;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.utils.RocketMQConstants;
+import com.hmdp.utils.OrderTimeoutPolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.client.producer.SendResult;
+import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.client.producer.TransactionMQProducer;
 import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.remoting.exception.RemotingException;
@@ -36,6 +39,9 @@ public class RocketMQProducer {
     @Resource
     private SeckillTransactionListener seckillTransactionListener;
 
+    @Resource
+    private VoucherOrderMapper orders;
+
     private TransactionMQProducer producer;
 
     @PostConstruct
@@ -63,7 +69,7 @@ public class RocketMQProducer {
     }
 
     /**
-     * 发送订单创建事务消息：先半消息，再在 TransactionListener 中执行 Lua，成功则 COMMIT（方案 A）
+     * 发送订单创建事务消息：先半消息，再在 TransactionListener 中执行 Lua，成功则 COMMIT
      */
     public SendResult sendOrderCreateInTransaction(VoucherOrder order, SeckillTxContext ctx)
             throws MQClientException {
@@ -78,32 +84,22 @@ public class RocketMQProducer {
     }
 
     /**
-     * 发送订单创建普通消息（方案 B：入口已限流并写入 WAITING，库存校验在消费者）
-     */
-    public SendResult sendOrderCreate(VoucherOrder order)
-            throws MQClientException, MQBrokerException, RemotingException, InterruptedException {
-        Message msg = new Message(
-                RocketMQConstants.ORDER_TOPIC,
-                RocketMQConstants.ORDER_TAG_CREATE,
-                JSONUtil.toJsonStr(order).getBytes(StandardCharsets.UTF_8));
-        SendResult result = producer.send(msg);
-        log.debug("订单创建消息发送成功(方案B), orderId={}, msgId={}", order.getId(), result.getMsgId());
-        return result;
-    }
-
-    /**
      * 发送超时关单延迟消息（broker 按档位延迟投递，到点触发关单）
      */
-    public void sendOrderTimeout(Long orderId)
+    public void sendOrderTimeout(VoucherOrder order)
             throws MQClientException, MQBrokerException, RemotingException, InterruptedException {
+        int delayLevel = OrderTimeoutPolicy.delayLevel(order.getCreateTime(), orders.databaseNow());
         Message msg = new Message(
                 RocketMQConstants.ORDER_TOPIC,
                 RocketMQConstants.ORDER_TAG_TIMEOUT,
-                orderId.toString().getBytes(StandardCharsets.UTF_8));
-        msg.setDelayTimeLevel(RocketMQConstants.ORDER_TIMEOUT_DELAY_LEVEL);
-        producer.send(msg);
+                order.getId().toString().getBytes(StandardCharsets.UTF_8));
+        msg.setDelayTimeLevel(delayLevel);
+        SendResult result = producer.send(msg);
+        if (result.getSendStatus() != SendStatus.SEND_OK) {
+            throw new MQClientException("Timeout message was not confirmed: " + result.getSendStatus(), null);
+        }
         log.debug("超时关单延迟消息发送成功, orderId={}, delayLevel={}",
-                orderId, RocketMQConstants.ORDER_TIMEOUT_DELAY_LEVEL);
+                order.getId(), delayLevel);
     }
 
     @PreDestroy

@@ -2,7 +2,8 @@ package com.hmdp.mq;
 
 import cn.hutool.json.JSONUtil;
 import com.hmdp.entity.VoucherOrder;
-import com.hmdp.service.IVoucherOrderService;
+import com.hmdp.service.SeckillReservationService;
+import com.hmdp.mapper.VoucherOrderMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.client.producer.TransactionListener;
@@ -12,34 +13,29 @@ import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
+import static com.hmdp.service.SeckillReservationService.*;
 
-/**
- * 秒杀事务消息监听：半消息落盘后执行 Lua；异常未上报时由 Broker 回查事务标记
- */
 @Slf4j
 @Component
 public class SeckillTransactionListener implements TransactionListener {
-
-    @Resource
-    private IVoucherOrderService voucherOrderService;
+    @Resource private SeckillReservationService reservations;
+    @Resource private VoucherOrderMapper orders;
 
     @Override
     public LocalTransactionState executeLocalTransaction(Message msg, Object arg) {
-        SeckillTxContext ctx = (SeckillTxContext) arg;
-        VoucherOrder order = ctx.getOrder();
+        SeckillTxContext context = arg instanceof SeckillTxContext ? (SeckillTxContext) arg : null;
         try {
-            long result = voucherOrderService.executeSeckillLocalTransaction(
-                    order.getVoucherId(), order.getUserId(), order.getId());
-            ctx.setLuaResult(result);
-            if (result == 0) {
-                return LocalTransactionState.COMMIT_MESSAGE;
+            VoucherOrder order = decode(msg);
+            if (context == null || !sameIdentity(order, context.getOrder())) {
+                throw new IllegalArgumentException("Message/context identity mismatch");
             }
-            // 库存不足 / 重复：半消息丢弃，不投递
-            return LocalTransactionState.ROLLBACK_MESSAGE;
+            long result = reservations.reserve(order);
+            context.setLuaResult(result);
+            return decision(result);
         } catch (Exception e) {
-            log.error("秒杀本地事务执行异常, orderId={}", order.getId(), e);
-            ctx.setLuaResult(-1);
-            // 未知：交给 Broker 回查；若 Lua 未写标记则最终 ROLLBACK
+            if (context != null) context.setLuaResult(UNKNOWN);
+            log.error("SECKILL_LOCAL_TRANSACTION_UNCERTAIN", e);
             return LocalTransactionState.UNKNOW;
         }
     }
@@ -47,22 +43,37 @@ public class SeckillTransactionListener implements TransactionListener {
     @Override
     public LocalTransactionState checkLocalTransaction(MessageExt msg) {
         try {
-            VoucherOrder order = JSONUtil.toBean(
-                    new String(msg.getBody(), StandardCharsets.UTF_8), VoucherOrder.class);
-            if (order.getId() == null) {
-                log.warn("事务回查消息体缺少 orderId，回滚");
-                return LocalTransactionState.ROLLBACK_MESSAGE;
-            }
-            boolean exists = voucherOrderService.hasSeckillTxnMarker(order.getId());
-            if (exists) {
-                log.info("事务回查：标记存在，COMMIT, orderId={}", order.getId());
+            VoucherOrder order = decode(msg);
+            // A committed DB order is authoritative even when the Redis record was lost.
+            VoucherOrder persisted = orders.selectById(order.getId());
+            if (persisted != null) {
+                if (!sameIdentity(order, persisted)) throw new IllegalStateException("Order identity conflict");
                 return LocalTransactionState.COMMIT_MESSAGE;
             }
-            log.info("事务回查：标记不存在，ROLLBACK, orderId={}", order.getId());
-            return LocalTransactionState.ROLLBACK_MESSAGE;
-        } catch (Exception e) {
-            log.error("事务回查异常，返回 UNKNOW 等待下次回查", e);
+            long result = reservations.check(order);
+            if (result == UNKNOWN) log.warn("SECKILL_TRANSACTION_UNRESOLVED: orderId={}; inspect preparation/evidence", order.getId());
+            return decision(result);
+        }
+        catch (Exception e) {
+            log.error("SECKILL_TRANSACTION_CHECK_UNCERTAIN", e);
             return LocalTransactionState.UNKNOW;
         }
+    }
+
+    private VoucherOrder decode(Message message) {
+        VoucherOrder order = JSONUtil.toBean(new String(message.getBody(), StandardCharsets.UTF_8), VoucherOrder.class);
+        validateIdentity(order);
+        return order;
+    }
+
+    private boolean sameIdentity(VoucherOrder a, VoucherOrder b) {
+        return b != null && Objects.equals(a.getId(), b.getId()) && Objects.equals(a.getUserId(), b.getUserId())
+                && Objects.equals(a.getVoucherId(), b.getVoucherId());
+    }
+
+    private LocalTransactionState decision(long result) {
+        if (result == RESERVED) return LocalTransactionState.COMMIT_MESSAGE;
+        if (result == NO_STOCK || result == DUPLICATE || result == ABORTED) return LocalTransactionState.ROLLBACK_MESSAGE;
+        return LocalTransactionState.UNKNOW;
     }
 }

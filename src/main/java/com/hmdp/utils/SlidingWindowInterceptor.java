@@ -4,20 +4,25 @@ import cn.hutool.json.JSONUtil;
 import com.hmdp.dto.Result;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import javax.annotation.Resource;
+import javax.annotation.PostConstruct;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 业务层滑动窗口限流：秒杀接口按 userId 限流（需在登录拦截器之后）
+ * 秒杀提交按 userId 限流（需在登录拦截器之后），不提供全局流量保护。
  */
 @Slf4j
 @Component
 public class SlidingWindowInterceptor implements HandlerInterceptor {
+
+    // MvcConfig 只注册此单层路径；HTTP 方法必须在 preHandle 中单独判断。
+    public static final String SUBMISSION_PATH = "/voucher-order/seckill/*";
 
     @Resource
     private SlidingWindowRateLimiter slidingWindowRateLimiter;
@@ -31,10 +36,17 @@ public class SlidingWindowInterceptor implements HandlerInterceptor {
     @Value("${seckill.rate-limit.sliding-window.max-requests:5}")
     private int maxRequests;
 
+    @PostConstruct
+    public void validateConfiguration() {
+        if (enabled && (windowMs <= 0 || maxRequests <= 0)) {
+            throw new IllegalArgumentException("Sliding window duration and max requests must be positive");
+        }
+    }
+
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler)
             throws Exception {
-        if (!enabled) {
+        if (!enabled || !HttpMethod.POST.matches(request.getMethod())) {
             return true;
         }
         if (UserHolder.getUser() == null) {

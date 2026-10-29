@@ -1,0 +1,94 @@
+name: hmdp-pro
+
+services:
+  mysql:
+    image: mysql:8.0.45
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-hmdp}
+      MYSQL_USER: ${MYSQL_USER:-hmdp}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Copy .env.example to .env first}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    # The course SQL contains zero timestamp defaults.
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-13306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./src/main/resources/db/hmdp.sql:/docker-entrypoint-initdb.d/01-hmdp.sql:ro
+      - ./src/main/resources/db/migrations/V002__order_stock_compensation.sql:/docker-entrypoint-initdb.d/02-order-stock-compensation.sql:ro
+      - ./src/main/resources/db/migrations/V003__seckill_recovery_task.sql:/docker-entrypoint-initdb.d/03-seckill-recovery-task.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u "$$MYSQL_USER" "$$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM tb_voucher_order" >/dev/null']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  redis:
+    image: redis:7.2
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  namesrv:
+    image: apache/rocketmq:4.9.7
+    platform: linux/amd64
+    command: ["sh", "mqnamesrv"]
+    environment:
+      JAVA_OPT_EXT: "-Xms128m -Xmx128m -Xmn64m"
+    ports:
+      - "127.0.0.1:9876:9876"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9876'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  broker-store-init:
+    image: apache/rocketmq:4.9.7
+    platform: linux/amd64
+    user: "0:0"
+    command: ["sh", "-c", "chown rocketmq:rocketmq /home/rocketmq/store"]
+    volumes:
+      - rocketmq-store:/home/rocketmq/store
+
+  broker:
+    image: apache/rocketmq:4.9.7
+    platform: linux/amd64
+    command: ["sh", "mqbroker", "-n", "namesrv:9876", "-c", "/home/rocketmq/broker.conf"]
+    environment:
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m -Xmn128m"
+    depends_on:
+      namesrv:
+        condition: service_healthy
+      broker-store-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:10909:10909"
+      - "127.0.0.1:10911:10911"
+      - "127.0.0.1:10912:10912"
+    volumes:
+      - ./docker/rocketmq/broker.conf:/home/rocketmq/broker.conf:ro
+      - rocketmq-store:/home/rocketmq/store
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/10911'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  mysql-data:
+  redis-data:
+  rocketmq-store:

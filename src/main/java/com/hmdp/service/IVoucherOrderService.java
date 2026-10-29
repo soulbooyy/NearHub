@@ -25,17 +25,10 @@ public interface IVoucherOrderService extends IService<VoucherOrder> {
     void createOrderFromMQ(VoucherOrder voucherOrder);
 
     /**
-     * 事务消息本地事务：执行 Lua（库存+一人一单+事务标记）
-     * @return 0 成功；1 库存不足；2 重复下单
-     */
-    long executeSeckillLocalTransaction(Long voucherId, Long userId, Long orderId);
-
-    /** 事务回查：判断 seckill:txn:{orderId} 是否存在 */
-    boolean hasSeckillTxnMarker(Long orderId);
-
-    /**
-     * 查询秒杀异步结果（方案 B 为主；方案 A 成功时无排队状态，可查订单表兜底）
-     * @return data 含 orderId、status（WAITING/SUCCESS/FAIL_*）
+     * 查询秒杀异步结果
+     * @return data 含 orderId、status
      */
     Result getSeckillResult(Long orderId);
+
+    Result getSeckillResultByVoucher(Long voucherId);
 }

@@ -25,7 +25,7 @@ import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
 
 /**
  * Canal binlog 缓存驱逐：MySQL 变更 → RocketMQ → 清除 Caffeine + Redis
- * 监听 tb_shop，配合 OpenResty L1 / Java 多级缓存做最终一致。
+ * 监听 tb_shop，驱逐 Redis 与当前 JVM 的 Caffeine；多实例本地缓存失效仍需完善。
  */
 @Slf4j
 @Component

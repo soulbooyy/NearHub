@@ -32,11 +32,16 @@ public class VoucherOrderController {
     }
 
     /**
-     * 秒杀异步结果查询（方案 B：WAITING/SUCCESS/FAIL_*；方案 A 可查订单表兜底）
+     * 秒杀异步结果查询
      */
     @GetMapping("seckill/result/{orderId}")
     public Result seckillResult(@PathVariable("orderId") Long orderId) {
         return voucherOrderService.getSeckillResult(orderId);
+    }
+
+    @GetMapping("seckill/result/by-voucher/{voucherId}")
+    public Result seckillResultByVoucher(@PathVariable("voucherId") Long voucherId) {
+        return voucherOrderService.getSeckillResultByVoucher(voucherId);
     }
 
     /**

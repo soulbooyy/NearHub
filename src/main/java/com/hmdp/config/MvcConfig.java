@@ -32,7 +32,9 @@ public class MvcConfig implements WebMvcConfigurer {
                         "/user/login"
                 ).order(1);
         registry.addInterceptor(slidingWindowInterceptor)
-                .addPathPatterns("/voucher-order/seckill/**")
+                // Spring MVC also accepts a trailing slash for the same submission endpoint.
+                .addPathPatterns(SlidingWindowInterceptor.SUBMISSION_PATH,
+                        SlidingWindowInterceptor.SUBMISSION_PATH + "/")
                 .order(2);
     }
 }

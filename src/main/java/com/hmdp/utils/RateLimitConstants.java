@@ -1,7 +1,7 @@
 package com.hmdp.utils;
 
 /**
- * 二级限流相关 Redis Key
+ * 秒杀提交的用户维度滑动窗口 Redis Key
  */
 public class RateLimitConstants {
 

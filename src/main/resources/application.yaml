@@ -1,17 +1,19 @@
 server:
-  port: 8081
+  port: ${SERVER_PORT:8081}
+hmdp:
+  upload-dir: ${HMDP_UPLOAD_DIR:${user.dir}/.local/uploads}
 spring:
   application:
     name: hmdp-pro
   datasource:
     driver-class-name: com.mysql.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
-    username: your_mysql_user
-    password: your_mysql_password
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:13306}/${MYSQL_DATABASE:hmdp}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8
+    username: ${MYSQL_USER:hmdp}
+    password: ${MYSQL_PASSWORD}
   redis:
-    host: your_redis_host
-    port: 6379
-    # password: your_redis_password
+    host: ${REDIS_HOST:127.0.0.1}
+    port: ${REDIS_PORT:16379}
+    password: ${REDIS_PASSWORD:}
     lettuce:
       pool:
         max-active: 10
@@ -22,13 +24,41 @@ spring:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
   type-aliases-package: com.hmdp.entity # 别名扫描包
+# ===== Java 缓存重建（初始值需结合连接池容量及压测调整） =====
+cache:
+  shop:
+    local-ttl-seconds: ${SHOP_LOCAL_TTL_SECONDS:60}
+    redis-logical-ttl-seconds: ${SHOP_REDIS_LOGICAL_TTL_SECONDS:300}
+  rebuild:
+    lock-wait-ms: 200
+    threads: 10
+    queue-capacity: 200
+    shutdown-wait-seconds: 5
 # ===== RocketMQ 消息队列 =====
 rocketmq:
-  name-server: 127.0.0.1:9876
-# ===== 秒杀方案：A=入口预扣+事务消息；B=限流入队+消费者校验 =====
+  name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+  order:
+    max-reconsume-times: ${ORDER_MAX_RECONSUME_TIMES:3}
+# ===== 唯一秒杀链路：入口预占 + 事务消息 =====
 seckill:
-  mode: A
-  # 二级限流第二层：业务滑动窗口（第一层在 OpenResty 网关令牌桶）
+  transaction:
+    prepare-timeout-ms: 60000
+  recovery:
+    poll-ms: 5000
+    batch-size: 100
+    max-attempts: 5
+    lease-seconds: 60
+    retry-base-seconds: 30
+    retry-max-seconds: 600
+    discovery-grace-ms: 60000
+  compensation:
+    poll-ms: 5000
+    batch-size: 100
+    max-attempts: 10
+    lease-seconds: 60
+    retry-base-seconds: 30
+    retry-max-seconds: 600
+  # 仅秒杀 POST 提交按用户限流，不限制系统总 QPS
   rate-limit:
     sliding-window:
       enabled: true
