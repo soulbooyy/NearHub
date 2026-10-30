@@ -70,6 +70,8 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
         SendResult sent = new SendResult();
         sent.setSendStatus(SendStatus.SEND_OK);
         when(producer.sendOrderCreateInTransaction(any(), any())).thenAnswer(call -> {
+            assertFalse(reservations.hasSuccessMarker(orderId));
+            assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
             SeckillTxContext context = call.getArgument(1);
             context.setLuaResult(reservations.reserve(message()));
             return sent;
@@ -108,9 +110,9 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
         assertEquals(0, count());
         assertEquals(10, stock());
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-        assertEquals("PREPARED", reservations.read(orderId).get("state"));
+        assertFalse(reservations.hasSuccessMarker(orderId));
         assertFalse(Boolean.TRUE.equals(redis.hasKey(SECKILL_CLAIM_OWNER_KEY + voucherId)));
-        assertEquals("PREPARED", reservations.read(orderId).get("state"));
+        assertFalse(reservations.hasSuccessMarker(orderId));
     }
 
     @Test void lostSubmissionResponseReturnsOriginalIdAndVoucherQueryFindsIt() throws Exception {
@@ -129,25 +131,27 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SUCCESS"));
     }
 
-    @Test void sendFailureLeavesPreparationThatCanBeTerminatedWithoutReservation() throws Exception {
+    @Test void sendFailureBeforeCallbackLeavesNoReservationOrMarker() throws Exception {
         when(producer.sendOrderCreateInTransaction(any(), any())).thenThrow(new IllegalStateException("send failed"));
         mvc.perform(post("/voucher-order/seckill/" + voucherId).header("authorization", token))
                 .andExpect(status().isAccepted()).andExpect(jsonPath("$.data.orderId").value(orderId));
-        redis.opsForHash().put(SECKILL_TXN_KEY + orderId, "deadline", "1");
-        recovery.discover();
+        assertFalse(reservations.hasSuccessMarker(orderId));
         mvc.perform(get("/voucher-order/seckill/result/" + orderId).header("authorization", token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("REJECTED"))
-                .andExpect(jsonPath("$.data.transactionState").value("ABORTED"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("UNKNOWN"));
+        mvc.perform(get("/voucher-order/seckill/result/by-voucher/" + voucherId).header("authorization", token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("NOT_FOUND"));
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
 
     @Test void redisQueryFailureIs503RatherThanNotFound() throws Exception {
         SeckillReservationService unavailable = mock(SeckillReservationService.class);
         when(unavailable.findOriginalOrderId(voucherId, userId)).thenThrow(new SeckillUnavailableException("Redis unavailable"));
-        when(unavailable.read(orderId)).thenThrow(new SeckillUnavailableException("Redis unavailable"));
         ReflectionTestUtils.setField(service, "reservations", unavailable);
         mvc.perform(get("/voucher-order/seckill/result/by-voucher/" + voucherId).header("authorization", token))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.success").value(false));
+        // ID-only pending queries carry no Redis/user identity evidence; DB failure still returns 503.
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("DB unavailable"))
+                .when(orders).selectById(orderId);
         mvc.perform(get("/voucher-order/seckill/result/" + orderId).header("authorization", token))
                 .andExpect(status().isServiceUnavailable());
     }
@@ -165,7 +169,11 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
         reserve(message());
         redis.opsForHash().put(LOGIN_USER_KEY + token, "id", String.valueOf(userId + 1));
         mvc.perform(get("/voucher-order/seckill/result/" + orderId).header("authorization", token))
-                .andExpect(jsonPath("$.success").value(false)).andExpect(jsonPath("$.data").doesNotExist());
+                .andExpect(jsonPath("$.data.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.userId").doesNotExist())
+                .andExpect(jsonPath("$.data.voucherId").doesNotExist());
+        mvc.perform(get("/voucher-order/seckill/result/by-voucher/" + voucherId).header("authorization", token))
+                .andExpect(jsonPath("$.data.status").value("NOT_FOUND"));
         service.createOrderFromMQ(message());
         mvc.perform(get("/voucher-order/seckill/result/" + orderId).header("authorization", token))
                 .andExpect(jsonPath("$.success").value(false));

@@ -87,9 +87,7 @@ GRANT ALL ON hmdp_order_test.* TO '$MYSQL_USER'@'%';
 SQL
     docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u "$MYSQL_USER" hmdp_order_test' \
       < src/main/resources/db/migrations/V002__order_stock_compensation.sql
-    docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u "$MYSQL_USER" hmdp_order_test' \
-      < src/main/resources/db/migrations/V003__seckill_recovery_task.sql
-    exec mvn -B '-Dtest=SeckillRecoveryIntegrationTest,SeckillTransactionIntegrationTest,OrderSubmissionIntegrationTest,OrderConsumptionIntegrationTest,OrderCancellationIntegrationTest,OrderTimeoutPolicyTest,OrderMQConsumerTest,RocketMQTimeoutProducerTest' test
+    exec mvn -B '-Dtest=SeckillTransactionIntegrationTest,OrderSubmissionIntegrationTest,OrderConsumptionIntegrationTest,OrderCancellationIntegrationTest,OrderTimeoutPolicyTest,OrderMQConsumerTest,RocketMQTimeoutProducerTest' test
     ;;
   migrate) migrate ;;
   status) docker compose ps ;;

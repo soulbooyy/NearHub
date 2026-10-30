@@ -1,4 +1,4 @@
-# HMDP-Pro
+# NearHub (HMDP-Pro)
 
 基于黑马点评课程项目的秒杀链路增强版。  
 当前仓库：[soulbooyy/NearHub](https://github.com/soulbooyy/NearHub)
@@ -9,19 +9,19 @@
 
 ### 1. 单一秒杀提交链路
 
-登录鉴权 → Redis ZSET + Lua 用户限流 → 生成订单 ID → PREPARED 登记 → 发送半消息 → 本地回调 Lua 原子预占 → COMMIT → 消费者独立 MySQL 事务落库。没有模式开关、消费者预占或订单创建分布式锁。
+登录鉴权 → Redis ZSET + Lua 用户限流 → 生成订单 ID → 发送半消息 → 本地回调 Lua 原子预扣并写入带 TTL 的成功标记 → COMMIT → 消费者独立 MySQL 事务落库。没有模式开关、消费者预占或订单创建分布式锁。
 
 ### 2. 事务消息与异常边界
 
-事务记录只有 `PREPARED / RESERVED / REJECTED / ABORTED` 四种业务状态。明确预占成功才 COMMIT，明确拒绝或安全终止才 ROLLBACK；未决结果返回 UNKNOWN，Broker 后续回查。Lua 运行错误不会自动回滚已执行的写入，因此在库存修改前完成校验，并用 `writePending`、`review` 诊断标记阻止不确定记录再次扣减或自动终止。Broker 回查有次数上限，独立的持久化缺单恢复负责兜底。
+成功标记为 `seckill:txn:{orderId} = 1`，默认保留 24 小时。Lua 成功返回 COMMIT；库存不足或重复购买返回 ROLLBACK；异常返回 UNKNOWN，由 Broker 回查标记。缺失标记在消息年龄不足 60 秒时暂缓决策，之后 ROLLBACK。宽限不能阻止暂停过久的本地回调在回滚后继续预扣；标记过期/丢失也可能导致已预扣事务被回滚。Lua 运行错误不会自动撤销已执行的写入，异常需要核账。
 
 ### 3. 一人一单与消费幂等
 
 预占 Lua 保留现有购买用户 Set 和 `userId → originalOrderId` 归属 Hash。消费者只核验预占证据，使用独立事务 Bean 执行 MySQL 条件扣库存与订单插入；主键和 `(user_id, voucher_id)` 联合唯一索引承担并发幂等。失败事务回滚后重新查库分类，异常继续触发 MQ 重试；无需订单创建 Redisson 锁。
 
-### 4. 最小化缺单恢复与对账
+### 4. 缺单告警与只读对账
 
-已有对账锁下扫描预占记录，经过等待窗口后核验 RESERVED 及原订单归属，为缺单登记专用 MySQL 恢复任务。任务复用补偿任务的租约、有限重试与退避方式，通过事务消息通道重投**原订单 ID**，Lua 识别已有预占而不再次扣库存，确认 MySQL 已落库才完成。证据不足或重试耗尽进入诊断/人工核查，不自动覆盖库存。正常异步处理中 Redis 与 MySQL 库存可以暂时不同。
+移除自动缺单恢复任务、租约、重投预算和事务 Hash 全量 SCAN。现有对账锁下，每分钟核查已结束超过 2 分钟的秒杀券：购买 Set 中有用户、MySQL 没有订单时记录 `ORDER_MISSING_AUDIT`，结合归属 Hash 中的原订单 ID、MQ/DLQ 与库存人工核查，不自动重投或覆盖库存。这不是活动进行中按订单计时的实时缺单检测。正常异步处理中 Redis 与 MySQL 库存可以暂时不同。
 
 ### 5. 延迟关单与持久化回补
 
@@ -116,58 +116,41 @@ docker compose logs --tail=100 mysql broker
 
 请先启动本地 Compose Redis/MySQL。`test-rate-limit` 使用真实 Redis DB 14 与唯一测试 Key，覆盖并发额度、独立用户、窗口边界及自动过期；MVC 测试使用真实注册规则，覆盖 POST 判断、结果查询和其他路径不触发限流、401/429/503 及业务异常不被误分类。`test-orders` 覆盖单链路提交回归，验证放行后库存与订单流程、超限和限流故障无业务副作用，以及额度耗尽后仍可查询结果；MQ 传输使用 mock，不代表真实 Broker 端到端测试。
 
-### 重构前后架构
+### 当前秒杀架构
 
-重构前（历史结构，仅用于对照）：OpenResty 可选部署，双模式分别在生产端或消费端预占，订单创建还使用 Redisson 锁。
-
-```mermaid
-flowchart LR
-    C[客户端] --> O[OpenResty 代理及令牌桶]
-    O --> E[Spring Boot 鉴权及用户限流]
-    C -. 本地直连 .-> E
-    E --> A[A 模式：事务消息回调预占]
-    E --> B[B 模式：普通消息及消费者预占]
-    A --> Q[RocketMQ]
-    B --> Q
-    Q --> L[订单锁及 MySQL 事务落库]
-    L --> D[(MySQL)]
-    A --> R[(Redis)]
-    B --> R
-```
-
-重构后：以下 Java 节点均在同一个 Spring Boot 应用内，Redis、MySQL 和 RocketMQ 为已有外部依赖。
+以下 Java 节点均在同一个 Spring Boot 应用内，Redis、MySQL 和 RocketMQ 为已有外部依赖。
 
 ```mermaid
 flowchart TD
-    C[客户端] --> E[登录鉴权及仅秒杀 POST 用户限流]
-    E --> P[生成订单 ID 及 PREPARED 登记]
+    C[客户端] --> E[登录鉴权与秒杀 POST 用户限流]
+    E --> P[生成订单 ID]
     P --> H[RocketMQ 半消息]
-    H --> T[本地回调 Redis Lua 原子预占]
-    T --> R[(Redis：库存、Set、归属 Hash、事务证据)]
-    T --> J{明确预占结果}
-    J -->|RESERVED| Q[RocketMQ COMMIT]
-    J -->|REJECTED / ABORTED| X[ROLLBACK]
-    J -->|未决| U[UNKNOWN 及 Broker 回查]
-    U --> RC[回查：核对 MySQL 订单及 Redis 证据]
-    RC --> J
-    R -.-> RC
-    D -.-> RC
-    Q --> W[消费者：核验证据、独立 MySQL 事务]
-    W --> D[(MySQL：条件扣库存、唯一订单)]
-    W --> M[事务提交后延迟关单消息]
+    H --> T[本地回调 Lua 预扣与成功标记 TTL]
+    T --> R[(Redis 库存、购买 Set、归属 Hash、成功标记)]
+    T --> J{Lua 结果}
+    J -->|成功| Q[COMMIT]
+    J -->|库存不足或重复购买| X[ROLLBACK]
+    J -->|异常或未知| U[UNKNOWN]
+    U --> RC[Broker 回查成功标记]
+    RC -->|存在| Q
+    RC -->|缺失且宽限结束| X
+    RC -->|Redis 故障或仍在宽限内| U
+    Q --> W[消费者核验归属，独立 MySQL 事务]
+    W --> D[(MySQL 条件扣库存与唯一订单)]
+    W --> M[提交后发送延迟关单消息]
     M --> K[支付与关单 CAS]
     K --> D
-    K --> S[持久化回补任务及 Redis 幂等回补]
-    S --> R
-    R --> F[对账锁内发现缺单、持久化恢复任务]
-    F -->|原订单 ID 有限重投| H
+    K --> S[持久化库存回补任务]
+    S --> L[Lua 幂等回补 Redis]
+    L --> R
+    R --> F[只读缺单与库存核查、人工处理]
     D --> F
     C --> V[按订单或当前用户与券查询]
     V --> D
     V --> R
 ```
 
-回查调用同一 Lua 的只读检查/超时终止动作，不执行新的预占；恢复消息回调命中 RESERVED 后也不再次扣减。库存差异只读核查，未提供按差额直接改库存的自动修复。
+半消息发送前不执行预扣，也不登记准备状态。回查只读取成功标记；消费者不执行预扣，也不依赖短期成功标记。独立事务、唯一索引和支付/关单 CAS 保留；没有双模式或订单创建锁。
 
 ### 商铺更新与轻量缓存失效
 
@@ -210,46 +193,70 @@ Redis 商铺对象仍不设置物理过期；逻辑过期后返回旧值并尝�
 
 另有真实 MySQL/Redis 集成测试，通过 Spring 事务代理验证提交前保留缓存、提交后按顺序清理、外层回滚不清理、Redis 删除失败仍清理本地，以及无效更新和事务外事件不清理。验证本地默认 60 秒 TTL、另一份缓存自然过期及主查询使用新的 Redis 逻辑期限。测试不等同于真实多 JVM 或生产压测，也不证明不存在旧值回填。
 
-### 事务证据、结果查询与恢复
+### 成功标记、回查与结果查询
 
-`SeckillReservationService` 统一执行 `seckill.lua` 的 PREPARE / RESERVE / CHECK 协议。事务 Hash 保存订单、用户、券、状态、创建时间和截止时间；库存与归属写入前设置 `writePending=1`，全部完成后设置 RESERVED 并清除此标记。`review=1` 表示证据冲突。这两个字段是诊断保护，不是可自动流转的额外业务状态。
+`SeckillReservationService.reserve()` 只在半消息的本地事务回调中执行 `seckill.lua`。脚本先校验参数、Key 类型、库存格式和归属一致性，再执行 DECR、SADD、HSET 原订单归属、SET 成功标记并 EXPIRE（通过 `SET ... EX` 同一命令完成）。没有四状态协议、准备登记或诊断字段。
 
-| 业务状态 | Broker 回查 | 处理 |
-| --- | --- | --- |
-| PREPARED | UNKNOWN | 默认 60 秒未预占且没有写入未决/归属冲突时，Lua 原子改为 ABORTED；迟到回调不能再预占 |
-| RESERVED | COMMIT | 核对身份和 Set/Hash 归属；相同订单回调不再扣库存 |
-| REJECTED | ROLLBACK | 明确库存不足或重复购买，且没有本订单合法预占 |
-| ABORTED | ROLLBACK | 已确认安全终止 |
-| 缺失、过期、类型异常、身份冲突或写入未决 | UNKNOWN | 不自动回滚消息或重新预占，诊断/人工核查 |
-
-回查首先检查 MySQL 中同 ID 的订单，身份一致的已落库订单可确认 COMMIT。Redis 事务、归属与回补标记均不设置自动 TTL：PREPARED 的“超时”是业务截止时间，并非删除 Key；终态记录保留供回查、查询和恢复。发送前登记遗留的 PREPARED 会由回查或定时对账终止。当前尚无归档协议，需要监控存储增长，不能直接删除未完成记录或永久幂等证据。Redis 记录全部丢失时，不保证自动还原缺单。
-
-| 接口 | 结果 |
+| 情况 | 本地回调 / Broker 回查 |
 | --- | --- |
-| `POST /voucher-order/seckill/{id}` | 正常预占返回订单 ID；发送/回调不确定返回 HTTP 202，data 含 `orderId`、`status: UNKNOWN` |
-| `GET /voucher-order/seckill/result/{orderId}` | 只允许查看当前用户自己的记录 |
-| `GET /voucher-order/seckill/result/by-voucher/{voucherId}` | MySQL 优先，否则根据现有归属 Hash 找回原订单 ID；不增加客户端 Token |
+| Lua 正常完成 | COMMIT；成功标记默认 24 小时 TTL |
+| 库存不足 / 其他订单已占购买资格 | 本地回调 ROLLBACK，不写标记 |
+| 同订单再次回调，标记和归属均正常 | COMMIT，不重复预扣、不续期 |
+| 同订单归属存在但标记缺失 | 本地回调 UNKNOWN，不补写标记、不再次预扣 |
+| 回查标记存在且值为 1 | COMMIT |
+| 回查标记缺失、消息出生不足 60 秒 | UNKNOWN，等待 Broker 后续回查 |
+| 回查标记缺失、超过宽限 | ROLLBACK，同时记录 `SECKILL_MARKER_MISSING_ROLLBACK` |
+| Redis 查询故障、旧 Hash/非法标记、消息时间缺失或在未来 | UNKNOWN；需要核查，不会无限保证重试 |
 
-查询状态为 SUCCESS（MySQL 已落库，另含 orderStatus）、PROCESSING、REJECTED、UNKNOWN、MANUAL_REVIEW 或 NOT_FOUND。NOT_FOUND 只表示本次健康读取未发现记录，不证明从未预占；如果已知归属但事务缺失，返回 UNKNOWN/人工核查。Redis/MySQL 查询失败为 503。查询接口不占限流额度；没有订单 ID 且尚未取得购买资格的 PREPARED 不提供按券检索。
+**缺失标记不证明没有扣库存。** 它可能表示 Lua 尚未开始、标记过期、Redis 丢失数据或 Lua 部分写入。短暂宽限只是减少过早回滚，没有迟到回调的原子隔离。超过宽限后回调恢复执行，或预扣成功后标记丢失，仍可能出现库存已扣但消息被回滚；不再自动恢复缺单。
 
-### 消费落库的事务与重试
+| 配置 / 环境变量 | 默认 | 约束及取舍 |
+| --- | --- | --- |
+| `seckill.transaction.marker-ttl-seconds` / `SECKILL_TX_MARKER_TTL_SECONDS` | 86400 秒 | 正整数且不超过 2147483647；仅成功预扣写入，读取/重复回调不续期 |
+| `seckill.transaction.check-grace-ms` / `SECKILL_TX_CHECK_GRACE_MS` | 60000 ms | 非负且小于标记 TTL；按 RocketMQ 原始 `bornTimestamp` 计算，要求主机时钟同步 |
 
-`VoucherOrderPersistenceService` 在独立 Spring Bean 的 MySQL 事务中执行幂等查询、条件扣库存、订单插入。不持有订单分布式锁。唯一键冲突离开事务代理并完成回滚后重新查库分类，不手工增加库存抵消已回滚事务。
+24 小时是本项目对常见短期故障留余量的初始保留策略，**不是 Broker 最晚回查时间的数学上界**。RocketMQ 4.9.7 源码默认首次回查门槛 6 秒、检查间隔 60 秒、最多检查 15 次；停机、积压、调度延迟意味着不能把 `15 × 60 秒` 当作严格上界。上线应核对实际 Broker 配置、预计最长故障/积压恢复时间和时钟余量，必要时调长 TTL；超过保留窗口的恢复转人工。[BrokerConfig 源码](https://github.com/apache/rocketmq/blob/rocketmq-all-4.9.7/common/src/main/java/org/apache/rocketmq/common/BrokerConfig.java)、[事务回查实现](https://github.com/apache/rocketmq/blob/rocketmq-all-4.9.7/broker/src/main/java/org/apache/rocketmq/broker/transaction/queue/TransactionalMessageServiceImpl.java)。
 
-- 同订单号重投：核对用户与券，复用已落库订单；未支付订单继续延迟消息发送，不重复扣库存。
-- 同订单号身份冲突、不同订单号占用同一用户购买资格：抛出异常，不能把错误订单号标记成功。
-- 消费端只检查合法预占，不再运行预占动作。Redis 已预占而 MySQL 库存不足时保留预占、抛异常并触发 MQ 重试，不盲目回补。
-- `ORDER_MAX_RECONSUME_TIMES` 默认 3。处理失败返回 `RECONSUME_LATER`；Broker 重试耗尽后进入死信流程，日志提示 `ORDER_MANUAL_REVIEW`。事务回查与消费重试都不是无限保障，缺单恢复独立运行。
+只有成功标记自动到期；购买 Set、原订单归属 Hash 和库存回补幂等标记继续保留。此改动控制事务证据增长，**没有解决所有 Redis 历史业务数据的归档**。不再 SCAN 事务 Key；现有按已结束券的 Set/订单核查仍随历史活动增加，需要容量监控。
 
-`tb_seckill_recovery_task` 是专用恢复表。对账使用 SCAN 检查事务记录，默认 RESERVED 超过 60 秒且缺单才登记；库存与归属未迁移，仍使用现有 Set + Hash。每 5 秒读取最多 100 个到期任务，CAS 领取 60 秒租约；无跨 Redis/MQ 的数据库长事务。
+提交正常成功返回原订单 ID；发送或执行结果不确定返回 HTTP 202 + 原订单 ID。查询契约：
 
-恢复前再次核验身份、预占和 MySQL，发送前持久化尝试次数（默认最多 5 次，含发送前故障尝试），30 秒起步、最多 600 秒退避。复用事务消息通道、原订单 ID 和已有 RESERVED 决策，不创建新 PREPARED。发送成功后仍为 PENDING，只有读到同身份 MySQL 订单才 DONE。最后一次发送后保留一次落库确认机会；仍缺单则 MANUAL_REVIEW。重复发现不重置次数或终态；完成/失败更新校验租约令牌和有效期。即使租约过期产生重复投递，预占和 MySQL 幂等仍须成立。
+- `GET /voucher-order/seckill/result/{orderId}`：MySQL 已落库时校验当前用户，返回 `SUCCESS` 和 `orderStatus`；尚未查到时统一 `UNKNOWN`。纯 String 标记无法证明用户身份，因此不披露未落库订单是否预占，不返回虚假的 NOT_FOUND。
+- `GET /voucher-order/seckill/result/by-voucher/{voucherId}`：先查当前用户的 MySQL 订单，再查当前用户在归属 Hash 中的原订单 ID。归属正常且标记存在返回 `PROCESSING`；有归属但标记缺失返回 `UNKNOWN`，两者均带原订单 ID；健康读取下没有订单/归属返回 `NOT_FOUND`。PROCESSING 不是最终落库保证。
+- 按券查询的 Redis 故障、数据库查询失败为 HTTP 503；订单 ID 查询在未落库时不读 Redis。支付和已落库结果仍严格检查用户。已取消订单仍是已落库结果，具体状态由 `orderStatus` 表示。
 
-自动恢复只覆盖仍有完整预占证据的缺单；不覆盖任意数据损坏。人工核查应结合原消息/DLQ、恢复/回补任务、两侧库存和归属。恢复任务本身不释放预占，也不删除购买资格。定时 SCAN 每轮仍遍历全部事务记录，批量 COUNT 只是扫描提示；这是当前项目规模下的简单实现，大量历史证据积累后的扫描成本尚未压测。
+### 消费落库、重试与人工核查
+
+`VoucherOrderPersistenceService` 的独立 Spring 事务包含幂等查询、MySQL 条件扣库存与插入订单。主键和 `(user_id, voucher_id)` 唯一索引承担并发约束；异常离开事务代理并完成回滚后重新查库分类，不手工回补已回滚事务。
+
+- 已落库同订单重投：核对用户与券，复用订单，不再访问 Redis 预占证据；未支付订单继续发送延迟关单消息。
+- 首次消费：核验购买 Set 和归属 Hash 的原订单 ID，**不要求成功标记仍存在**，因此标记到期不阻断已 COMMIT 消息的延迟消费。消费者没有预扣或订单分布式锁。
+- 同订单号身份冲突、其他订单号占用购买资格、无归属或归属冲突：异常重试，不能把候选订单号报告为成功。
+- Redis 已预扣而 MySQL 库存不足：保留购买资格，回滚 MySQL 事务并触发 MQ 重试，不盲目回补 Redis。
+- `ORDER_MAX_RECONSUME_TIMES` 默认 3；处理失败始终返回 `RECONSUME_LATER`，耗尽后由 Broker 处理死信。日志 `ORDER_MANUAL_REVIEW` 提示检查 DLQ。自动缺单恢复 Worker、任务表读写和原订单事务消息重投已移除。
+
+缺单告警仅在活动结束 2 分钟后扫描现有 Set 与 MySQL。人工处理须核验原订单 ID、用户/券、两侧库存、购买归属、MQ/DLQ、关单及回补状态；确认是已提交但未落库的 CREATE 后可重放原消费消息，不能生成新订单 ID 或删除购买资格重试。**不要通过事务发送接口盲目重发旧半消息**：缺失标记时本地回调不会重建成功证据。证据不足时停止自动处理。
+
+### 已接受的故障边界
+
+| 故障 | 处理与限制 |
+| --- | --- |
+| Lua 成功，Producer 在 COMMIT 前退出，或 Lua 响应丢失 | 标记仍可读时由 Broker 回查 COMMIT；测试只直接调用回调，不等于真实 Broker 重启验证 |
+| Lua 前就回查 | 宽限内 UNKNOWN；回调暂停超过宽限仍可能在 ROLLBACK 后预扣，接受人工核查 |
+| 标记到期/丢失后回查 | 宽限已结束则 ROLLBACK，可能留下缺单预占；不做自动重投 |
+| MySQL 消费失败 / 提交后 ACK 丢失 | MQ 有限重试 + MySQL 回滚/唯一键幂等；重试耗尽进入人工 DLQ 处理 |
+| Lua 运行中途错误 | Redis 不撤销此前写入。预校验降低可预见错误；OOM、异常停机、数据丢失仍可能留下部分写入，不能声称安全自动恢复 |
+| 部分写入只有扣库存、没有归属 | Set 差集无法找到该笔订单；只能从库存差异、请求/事务错误日志和 MQ 证据核查；再次执行 Lua 甚至可能再次扣减，不承诺自动防护 |
+| 成功标记到期后旧 CREATE 再次消费 | 已落库用 MySQL 幂等，未落库用长期归属核验；所有相关证据被丢弃后不承诺安全恢复 |
+| 取消后重复回补 | 原持久化任务 + 永久回补幂等标记，保留 Set/Hash，事务成功标记是否存在无影响 |
+
+没有 Redis、MQ、MySQL 全局强一致承诺。自动缺单恢复的移除换取了更小的协议和维护成本；人工核查与日志告警是运维责任，目前未接外部告警平台。
 
 ### 升级兼容边界
 
-这是协议切换，不支持新旧版本混跑。先停止旧入口，在旧版本中排空/核查旧普通消息、半消息和消费重试，再停止旧消费者，核对存量预占，执行增量迁移后统一上线。旧事务 String 标记不能直接当作新事务 Hash 使用；没有身份与预占证据的历史记录不能自动转换或恢复。保留现有 Set/Hash，不批量重置库存。旧订单锁配置与模式环境变量应删除；客户端改为直连 Java。回滚版本同样需要先核账，不能让旧脚本覆盖新协议。
+这是 Hash → String 的协议切换，**不支持新旧版本混跑**。先关闭旧入口，在旧版本中排空/核查半消息、消费重试与未完成缺单恢复任务；停旧 Worker/消费者并核对存量预占后统一升级。新代码遇到旧事务 Hash 不覆盖，回查返回 UNKNOWN；因此必须在切换前解决未决事务，不能依赖新回查完成旧协议。
+
+保留 `V003__seckill_recovery_task.sql` 历史迁移及初始化迁移顺序，已有表不 DROP、不清空；新代码不读取或执行该表的任务。未完成旧任务需在旧版完成或导出人工核查，不能静默忽略。新标记 TTL 不会追溯清理旧永久 Hash，旧 Hash 仅在完成消息/订单核验、排除旧回调与重放之后，由运维按原订单逐批归档清理，本次没有执行历史数据清理。回滚版本也须先核账。
 
 ### 关单事务与 Redis 回补
 
@@ -276,7 +283,7 @@ Redis 商铺对象仍不设置物理过期；逻辑过期后返回旧值并尝�
 ./scripts/dev.sh migrate
 ```
 
-迁移文件为 `src/main/resources/db/migrations/V002__order_stock_compensation.sql` 和 `V003__seckill_recovery_task.sql`，只新增回补/恢复任务表，不自动回填历史订单。运维应持续检查 `MANUAL_REVIEW`、长期 `PENDING` 和过期 `PROCESSING` 任务，不能仅以 MQ 已确认判断 Redis 已回补。库存对账现为只读估计和日志告警，未接外部告警平台。
+迁移文件为 `src/main/resources/db/migrations/V002__order_stock_compensation.sql` 和 `V003__seckill_recovery_task.sql`，保留历史建表兼容，不自动回填历史订单；当前只有库存回补任务表被运行代码使用。运维应持续检查 `MANUAL_REVIEW`、长期 `PENDING` 和过期 `PROCESSING` 任务，不能仅以 MQ 已确认判断 Redis 已回补。库存对账现为只读估计和日志告警，未接外部告警平台。
 
 ### 订单链路测试
 
@@ -285,9 +292,9 @@ Redis 商铺对象仍不设置物理过期；逻辑过期后返回旧值并尝�
 ./scripts/dev.sh test-orders
 ```
 
-`test-orders` 为本地 Compose MySQL 创建独立的 `hmdp_order_test` 数据库，复制订单与秒杀券表结构并执行两张任务表迁移；Redis 使用 DB 15。测试使用唯一 ID 并清理自己的数据，不启动定时调度或真实 MQ 消费者。
+`test-orders` 为本地 Compose MySQL 创建独立的 `hmdp_order_test` 数据库，复制订单与秒杀券表结构并执行库存回补任务表迁移；Redis 使用 DB 15。测试使用唯一 ID 并清理自己的数据，不启动定时调度或真实 MQ 消费者。
 
-覆盖 MySQL 回滚/条件库存/并发唯一键、Redis 预占重放与部分写入注入、事务回查方法、HTTP 提交和双查询、支付关单竞争、幂等回补、恢复任务有限重投、租约接管和旧令牌隔离。数据库子进程测试验证 JDBC 事务中断回滚/提交后重放；生产者恢复测试使用新监听器对象，不等于真实生产者进程重启。
+覆盖 MySQL 回滚/条件库存/并发唯一键、成功标记 TTL/回查宽限/重复回调、标记到期后的消费、Lua 部分写入边界、HTTP 提交和双查询、支付关单竞争、持久化库存回补的租约接管与旧令牌隔离。数据库子进程测试验证 JDBC 事务中断回滚/提交后重放；回查恢复测试使用新监听器对象，不等于真实生产者进程重启。
 
 **MQ 传输为 mock，未进行真实 Broker 故障注入、完整网络端到端演练或性能压测；没有 QPS、P95/P99 结论。** 已执行测试、每阶段修改和尚未验证的风险见 [分阶段重构记录](docs/seckill-refactor.md)。
 

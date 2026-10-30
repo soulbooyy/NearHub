@@ -20,13 +20,13 @@ public class RedisConstants {
     public static final Long LOCK_SHOP_TTL = 10L;
 
     public static final String SECKILL_STOCK_KEY = "seckill:stock:";
-    /** 秒杀成功 claim 用户集合（Lua 脚本 SADD 写入，一人一单与补单差集依据） */
+    /** 秒杀成功 claim 用户集合（Lua 脚本 SADD 写入，一人一单与缺单核查依据） */
     public static final String SECKILL_ORDER_KEY = "seckill:order:";
     /** Hash: userId -> original orderId. No short TTL: must survive MQ retries / manual replay. */
     public static final String SECKILL_CLAIM_OWNER_KEY = "seckill:claim-owner:";
     /** Permanent idempotency marker for cancelled order stock refunds; no automatic cleanup. */
     public static final String SECKILL_STOCK_RETURNED_KEY = "seckill:stock-returned:";
-    /** RocketMQ 事务消息本地标记（与 Lua 扣库存同脚本写入，回查用） */
+    /** RocketMQ 事务成功 String 标记：值为 1，与 Lua 预扣同脚本写入并设置 TTL */
     public static final String SECKILL_TXN_KEY = "seckill:txn:";
     public static final String BLOG_LIKED_KEY = "blog:liked:";
     public static final String FEED_KEY = "feed:";

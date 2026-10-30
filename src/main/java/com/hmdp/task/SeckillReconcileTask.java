@@ -25,8 +25,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 超时关单兜底、原订单恢复任务发现与只读库存核对。
- * 缺单恢复保留原订单 ID；证据不足只告警。
+ * 超时关单兜底、缺单告警与只读库存核对；不自动重投或修复缺单。
  * 库存差异只告警，禁止自动 SET/UPDATE 覆盖预占或重复计算回补。
  */
 @Slf4j
@@ -43,8 +42,6 @@ public class SeckillReconcileTask {
     private RedissonClient redissonClient;
     @Resource
     private VoucherOrderMapper orders;
-    @Resource
-    private SeckillRecoveryWorker recovery;
 
     /** 固定业务期限；延迟消息档位只负责唤醒，不能决定是否到期。 */
     private static final int ORDER_TIMEOUT_MINUTES = OrderTimeoutPolicy.TIMEOUT_MINUTES;
@@ -63,7 +60,6 @@ public class SeckillReconcileTask {
         }
         try {
             closeTimeoutOrders();
-            recovery.discover();
             Set<Long> unresolved = reportMissingOrders();
             auditFinishedStocks(unresolved);
         } catch (Exception e) {
@@ -92,11 +88,11 @@ public class SeckillReconcileTask {
         }
     }
 
-    /** Also report legacy/missing transaction evidence that discovery cannot safely recover. */
+    /** After the campaign ends plus a grace, report claims without orders for manual investigation. */
     private Set<Long> reportMissingOrders() {
         Set<Long> unresolved = new HashSet<>();
         List<SeckillVoucher> vouchers = seckillVoucherService.lambdaQuery()
-                .lt(SeckillVoucher::getEndTime, LocalDateTime.now())
+                .lt(SeckillVoucher::getEndTime, LocalDateTime.now().minusMinutes(RECONCILE_AFTER_END_MINUTES))
                 .list();
         for (SeckillVoucher voucher : vouchers) {
             Long voucherId = voucher.getVoucherId();
@@ -120,7 +116,7 @@ public class SeckillReconcileTask {
                 unresolved.add(voucherId);
                 Object owner = stringRedisTemplate.opsForHash().get(
                         RedisConstants.SECKILL_CLAIM_OWNER_KEY + voucherId, userId);
-                log.error("ORDER_MISSING_AUDIT: reservation without order, voucherId={}, userId={}, originalOrderId={}; inspect recovery task/evidence/DLQ, do not create a new orderId",
+                log.error("ORDER_MISSING_AUDIT: reservation without order, voucherId={}, userId={}, originalOrderId={}; inspect ownership/stock/DLQ manually, do not create a new orderId",
                         voucherId, userId, owner);
             }
         }

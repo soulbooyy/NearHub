@@ -10,7 +10,7 @@ import lombok.Data;
 public class SeckillTxContext {
 
     private final VoucherOrder order;
-    /** Lua 返回码：0 成功；1 库存不足；2 重复下单；3 已终止；-1 未执行/异常 */
+    /** Lua 返回码：0 成功；1 库存不足；2 重复下单；-1 未执行/异常 */
     private long luaResult = -1;
 
     public SeckillTxContext(VoucherOrder order) {

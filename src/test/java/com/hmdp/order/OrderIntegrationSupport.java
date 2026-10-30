@@ -6,8 +6,6 @@ import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.OrderStockCompensationMapper;
 import com.hmdp.task.OrderStockCompensationWorker;
-import com.hmdp.task.SeckillRecoveryWorker;
-import com.hmdp.mapper.SeckillRecoveryTaskMapper;
 import com.hmdp.mq.RocketMQProducer;
 import com.hmdp.service.*;
 import com.hmdp.service.impl.SeckillVoucherServiceImpl;
@@ -54,7 +52,7 @@ abstract class OrderIntegrationSupport {
     @MapperScan("com.hmdp.mapper")
     @Import({VoucherOrderPersistenceService.class, VoucherOrderServiceImpl.class, SeckillReservationService.class,
             SeckillVoucherServiceImpl.class, RedissonConfig.class, RedisIdWorker.class, SeckillReconcileTask.class,
-            VoucherOrderCancellationService.class, RedisStockReturnService.class, OrderStockCompensationWorker.class, SeckillRecoveryWorker.class})
+            VoucherOrderCancellationService.class, RedisStockReturnService.class, OrderStockCompensationWorker.class})
     static class TestApplication {
         @Bean
         static BeanPostProcessor mapperFaultInjection() {
@@ -79,8 +77,6 @@ abstract class OrderIntegrationSupport {
         }
     }
 
-    @Autowired SeckillRecoveryTaskMapper recoveryTasks;
-    @Autowired SeckillRecoveryWorker recovery;
     @Autowired SeckillReservationService reservations;
     @Autowired VoucherOrderPersistenceService persistence;
     @Autowired VoucherOrderServiceImpl service;
@@ -108,7 +104,6 @@ abstract class OrderIntegrationSupport {
         jdbc.update("INSERT INTO tb_seckill_voucher(voucher_id,stock,initial_stock,begin_time,end_time) VALUES (?,10,10,?,?)",
                 voucherId, LocalDateTime.now().minusHours(1), LocalDateTime.now().plusDays(1));
         redis.opsForValue().set(SECKILL_STOCK_KEY + voucherId, "10");
-        reservations.prepare(message());
         login(userId);
     }
 
@@ -117,7 +112,6 @@ abstract class OrderIntegrationSupport {
         UserHolder.removeUser();
         reset(orders, vouchers, tasks, redisReturns);
         org.springframework.test.util.ReflectionTestUtils.setField(worker, "maxAttempts", 10);
-        jdbc.update("DELETE FROM tb_seckill_recovery_task WHERE voucher_id=?", voucherId);
         jdbc.update("DELETE FROM tb_order_stock_compensation WHERE voucher_id=?", voucherId);
         jdbc.update("DELETE FROM tb_voucher_order WHERE voucher_id=?", voucherId);
         jdbc.update("DELETE FROM tb_seckill_voucher WHERE voucher_id=?", voucherId);
@@ -141,7 +135,6 @@ abstract class OrderIntegrationSupport {
     }
     VoucherOrder reservedMessage() { VoucherOrder order = message(); reserve(order); return order; }
     void reserve(VoucherOrder order) {
-        if (reservations.read(order.getId()).isEmpty()) reservations.prepare(order);
         assertEquals(0, reservations.reserve(order));
     }
 

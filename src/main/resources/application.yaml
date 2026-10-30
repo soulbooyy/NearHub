@@ -39,18 +39,11 @@ rocketmq:
   name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
   order:
     max-reconsume-times: ${ORDER_MAX_RECONSUME_TIMES:3}
-# ===== 唯一秒杀链路：入口预占 + 事务消息 =====
+# ===== 唯一秒杀链路：半消息 → Lua 预扣和成功标记 → 事务落库 =====
 seckill:
   transaction:
-    prepare-timeout-ms: 60000
-  recovery:
-    poll-ms: 5000
-    batch-size: 100
-    max-attempts: 5
-    lease-seconds: 60
-    retry-base-seconds: 30
-    retry-max-seconds: 600
-    discovery-grace-ms: 60000
+    marker-ttl-seconds: ${SECKILL_TX_MARKER_TTL_SECONDS:86400}
+    check-grace-ms: ${SECKILL_TX_CHECK_GRACE_MS:60000}
   compensation:
     poll-ms: 5000
     batch-size: 100

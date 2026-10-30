@@ -3,8 +3,6 @@ package com.hmdp.service.impl;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.VoucherOrder;
-import com.hmdp.entity.SeckillRecoveryTask;
-import com.hmdp.mapper.SeckillRecoveryTaskMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.RocketMQProducer;
 import com.hmdp.mq.SeckillTxContext;
@@ -36,7 +34,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource private VoucherOrderPersistenceService persistenceService;
     @Resource private VoucherOrderCancellationService cancellationService;
     @Resource private SeckillReservationService reservations;
-    @Resource private SeckillRecoveryTaskMapper recoveryTasks;
 
     @Override
     public void cancelTimeoutOrder(Long orderId) {
@@ -61,8 +58,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         validateIdentity(message);
         OrderPersistenceResult result = persistenceService.findExisting(message);
         if (result == null) {
-            // Read-only evidence check, never perform reservation in the consumer.
-            if (reservations.check(message) != RESERVED) {
+            // Permanent ownership survives marker expiry. Never reserve or deduct Redis stock here.
+            if (!Objects.equals(message.getId(), reservations.findOriginalOrderId(message.getVoucherId(), message.getUserId()))) {
                 throw new IllegalStateException("CREATE without confirmed reservation: " + message.getId());
             }
             try {
@@ -97,7 +94,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 .setUserId(userId).setVoucherId(voucherId);
         SeckillTxContext context = new SeckillTxContext(order);
         try {
-            reservations.prepare(order);
             SendResult sent = rocketMQProducer.sendOrderCreateInTransaction(order, context);
             if (sent == null || sent.getSendStatus() != SendStatus.SEND_OK) {
                 throw new SeckillPendingException(order.getId(), null);
@@ -107,10 +103,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             throw new SeckillPendingException(order.getId(), e);
         }
         long result = context.getLuaResult();
-        if (result == RESERVED) return Result.ok(order.getId());
+        if (result == SUCCESS) return Result.ok(order.getId());
         if (result == NO_STOCK) return Result.fail("库存不足");
         if (result == DUPLICATE) return Result.fail("不能重复下单");
-        if (result == ABORTED) return Result.fail("秒杀提交已超时，请重试");
         throw new SeckillPendingException(order.getId(), null);
     }
 
@@ -150,38 +145,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             data.put("status", "SUCCESS"); data.put("orderStatus", order.getStatus());
             return Result.ok(data);
         }
-        SeckillRecoveryTask recovery = recoveryTasks.selectById(orderId);
-        if (recovery != null) {
-            if (!Objects.equals(recovery.getUserId(), userId)) return Result.fail("订单不存在或无权访问");
-            if (expectedVoucher != null && !Objects.equals(expectedVoucher, recovery.getVoucherId()))
-                throw new SeckillUnavailableException("Recovery voucher mismatch");
-        }
-        Map<Object, Object> record = reservations.read(orderId);
-        if (record.isEmpty()) {
-            data.put("status", recovery != null && SeckillRecoveryTask.MANUAL_REVIEW.equals(recovery.getStatus())
-                    ? "MANUAL_REVIEW" : knownOwner || recovery != null ? "UNKNOWN" : "NOT_FOUND");
-            return Result.ok(data);
-        }
-        VoucherOrder identity = reservations.identity(orderId, record);
-        if (!Objects.equals(identity.getUserId(), userId)) return Result.fail("订单不存在或无权访问");
-        if (expectedVoucher != null && !Objects.equals(expectedVoucher, identity.getVoucherId())) {
-            throw new SeckillUnavailableException("Reservation voucher mismatch");
-        }
-        long decision = reservations.check(identity);
-        record = reservations.read(orderId); // CHECK can atomically abort an expired preparation or flag a conflict.
-        String state = (String) record.get("state");
-        String status = "UNKNOWN";
-        if ("1".equals(record.get("writePending")) || "1".equals(record.get("review"))) status = "MANUAL_REVIEW";
-        else if (decision == RESERVED) status = "PROCESSING";
-        else if (decision == NO_STOCK || decision == DUPLICATE || decision == ABORTED) status = "REJECTED";
-        else if ("PREPARED".equals(state)) status = "PROCESSING";
-        if (recovery != null) {
-            if (!Objects.equals(recovery.getUserId(), userId) || !Objects.equals(recovery.getVoucherId(), identity.getVoucherId()))
-                throw new SeckillUnavailableException("Recovery identity mismatch");
-            if (SeckillRecoveryTask.MANUAL_REVIEW.equals(recovery.getStatus())) status = "MANUAL_REVIEW";
-        }
-        data.put("status", status); data.put("transactionState", state);
-        if (record.get("reason") != null) data.put("reason", record.get("reason"));
+        // A plain success marker carries no user identity. Without a DB order or an authenticated
+        // voucher/owner lookup, do not reveal whether somebody else's order was reserved.
+        data.put("status", knownOwner && reservations.hasSuccessMarker(orderId) ? "PROCESSING" : "UNKNOWN");
         return Result.ok(data);
     }
 }

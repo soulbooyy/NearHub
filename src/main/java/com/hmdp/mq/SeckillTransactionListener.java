@@ -3,7 +3,7 @@ package com.hmdp.mq;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.service.SeckillReservationService;
-import com.hmdp.mapper.VoucherOrderMapper;
+import org.springframework.beans.factory.annotation.Value;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.client.producer.TransactionListener;
@@ -20,7 +20,7 @@ import static com.hmdp.service.SeckillReservationService.*;
 @Component
 public class SeckillTransactionListener implements TransactionListener {
     @Resource private SeckillReservationService reservations;
-    @Resource private VoucherOrderMapper orders;
+    @Value("${seckill.transaction.check-grace-ms:60000}") private long checkGraceMs = 60000;
 
     @Override
     public LocalTransactionState executeLocalTransaction(Message msg, Object arg) {
@@ -44,15 +44,15 @@ public class SeckillTransactionListener implements TransactionListener {
     public LocalTransactionState checkLocalTransaction(MessageExt msg) {
         try {
             VoucherOrder order = decode(msg);
-            // A committed DB order is authoritative even when the Redis record was lost.
-            VoucherOrder persisted = orders.selectById(order.getId());
-            if (persisted != null) {
-                if (!sameIdentity(order, persisted)) throw new IllegalStateException("Order identity conflict");
-                return LocalTransactionState.COMMIT_MESSAGE;
-            }
-            long result = reservations.check(order);
-            if (result == UNKNOWN) log.warn("SECKILL_TRANSACTION_UNRESOLVED: orderId={}; inspect preparation/evidence", order.getId());
-            return decision(result);
+            if (reservations.hasSuccessMarker(order.getId())) return LocalTransactionState.COMMIT_MESSAGE;
+            long born = msg.getBornTimestamp();
+            long now = System.currentTimeMillis();
+            // A bounded grace uses the original MQ timestamp; no persisted preparation state.
+            // It reduces early checks, but does not fence a callback that resumes after rollback.
+            if (born <= 0 || born > now || now - born < checkGraceMs) return LocalTransactionState.UNKNOW;
+            log.warn("SECKILL_MARKER_MISSING_ROLLBACK: orderId={}, ageMs={}; expiry/loss can hide a successful reservation",
+                    order.getId(), now - born);
+            return LocalTransactionState.ROLLBACK_MESSAGE;
         }
         catch (Exception e) {
             log.error("SECKILL_TRANSACTION_CHECK_UNCERTAIN", e);
@@ -72,8 +72,8 @@ public class SeckillTransactionListener implements TransactionListener {
     }
 
     private LocalTransactionState decision(long result) {
-        if (result == RESERVED) return LocalTransactionState.COMMIT_MESSAGE;
-        if (result == NO_STOCK || result == DUPLICATE || result == ABORTED) return LocalTransactionState.ROLLBACK_MESSAGE;
+        if (result == SUCCESS) return LocalTransactionState.COMMIT_MESSAGE;
+        if (result == NO_STOCK || result == DUPLICATE) return LocalTransactionState.ROLLBACK_MESSAGE;
         return LocalTransactionState.UNKNOW;
     }
 }

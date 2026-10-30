@@ -20,6 +20,20 @@ import static org.mockito.Mockito.*;
 import static org.mockito.AdditionalAnswers.delegatesTo;
 
 class OrderConsumptionIntegrationTest extends OrderIntegrationSupport {
+    @Test void committedMessageCanCreateAfterMarkerExpiryAndReplayWithoutRedis() {
+        VoucherOrder order = reservedMessage();
+        redis.delete(SECKILL_TXN_KEY + orderId);
+        service.createOrderFromMQ(order); // Ownership, not the short-lived marker, authorizes first consumption.
+        com.hmdp.service.SeckillReservationService unavailable = mock(com.hmdp.service.SeckillReservationService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "reservations", unavailable);
+        try {
+            service.createOrderFromMQ(order); // DB commit + lost ACK: duplicate bypasses Redis.
+            verifyNoInteractions(unavailable);
+            assertEquals(1, count()); assertEquals(9, stock());
+            assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+        } finally { org.springframework.test.util.ReflectionTestUtils.setField(service, "reservations", reservations); }
+    }
+
     @Test
     void originalOrderCommittingBetweenIdentityReadsIsStillIdempotent() {
         VoucherOrder original = reservedMessage();
@@ -182,13 +196,14 @@ class OrderConsumptionIntegrationTest extends OrderIntegrationSupport {
         }
         assertEquals(0, count()); assertEquals(0, stock());
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-        assertEquals("RESERVED", reservations.read(orderId).get("state"));
+        assertTrue(reservations.hasSuccessMarker(orderId));
+        assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
     }
 
     @Test
     void unownedLegacyClaimRequiresManualReview() {
         redis.opsForSet().add(SECKILL_ORDER_KEY + voucherId, String.valueOf(userId));
-        assertThrows(IllegalStateException.class, () -> service.createOrderFromMQ(message()));
+        assertThrows(com.hmdp.service.SeckillUnavailableException.class, () -> service.createOrderFromMQ(message()));
         assertEquals(10, stock());
         assertEquals(0, count());
         assertNull(redis.opsForHash().get(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId)));
