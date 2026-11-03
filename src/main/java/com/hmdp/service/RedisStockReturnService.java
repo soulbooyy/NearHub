@@ -25,7 +25,6 @@ public class RedisStockReturnService {
         return redis.execute(SCRIPT, Arrays.asList(
                         SECKILL_STOCK_KEY + task.getVoucherId(),
                         SECKILL_CLAIM_OWNER_KEY + task.getVoucherId(),
-                        SECKILL_ORDER_KEY + task.getVoucherId(),
                         SECKILL_STOCK_RETURNED_KEY + task.getOrderId()),
                 task.getUserId().toString(), task.getOrderId().toString(), task.getVoucherId().toString());
     }

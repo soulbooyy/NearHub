@@ -142,7 +142,6 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
 
     @Test void partialOwnershipWithoutMarkerIsNotReReserved() {
         redis.opsForValue().set(SECKILL_STOCK_KEY + voucherId, "9");
-        redis.opsForSet().add(SECKILL_ORDER_KEY + voucherId, String.valueOf(userId));
         redis.opsForHash().put(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId), String.valueOf(orderId));
         assertEquals(-1, reservations.reserve(message()));
         assertFalse(reservations.hasSuccessMarker(orderId));
@@ -162,7 +161,7 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         assertEquals(-1, reservations.reserve(message()));
         assertFalse(reservations.hasSuccessMarker(orderId));
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-        assertFalse(Boolean.TRUE.equals(redis.hasKey(SECKILL_ORDER_KEY + voucherId)));
+        assertFalse(Boolean.TRUE.equals(redis.hasKey(legacyPurchaserKey())));
     }
 
     @Test void oldHashMarkerIsNotOverwrittenOrSilentlyCommitted() {
@@ -173,8 +172,8 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
 
-    @Test void conflictingOwnershipIsRejectedBeforeMutation() {
-        redis.opsForSet().add(SECKILL_ORDER_KEY + voucherId, String.valueOf(userId));
+    @Test void malformedOwnerIdIsRejectedBeforeMutation() {
+        redis.opsForHash().put(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId), "not-an-order");
         assertEquals(-1, reservations.reserve(message()));
         assertFalse(reservations.hasSuccessMarker(orderId));
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
@@ -201,7 +200,66 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
             start.countDown();
             for (Future<?> job : jobs) job.get(10, TimeUnit.SECONDS);
             assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-            assertEquals(1L, redis.opsForSet().size(SECKILL_ORDER_KEY + voucherId));
+            assertEquals(1L, redis.opsForHash().size(SECKILL_CLAIM_OWNER_KEY + voucherId));
+            assertFalse(redis.hasKey(legacyPurchaserKey()));
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test void existingLegacyKeyIsIgnoredByReservationConsumptionAndRefund() {
+        // A wrong-type obsolete key catches accidental TYPE/SISMEMBER/SADD dependencies.
+        redis.opsForValue().set(legacyPurchaserKey(), "retired-key");
+        assertEquals(0, reservations.reserve(message()));
+        assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
+        service.createOrderFromMQ(message());
+        jdbc.update("UPDATE tb_voucher_order SET create_time=DATE_SUB(CURRENT_TIMESTAMP,INTERVAL 16 MINUTE) WHERE id=?", orderId);
+        service.cancelTimeoutOrder(orderId);
+        worker.process(orderId);
+        assertEquals(com.hmdp.entity.OrderStockCompensation.DONE, tasks.selectById(orderId).getStatus());
+        assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+        assertEquals("retired-key", redis.opsForValue().get(legacyPurchaserKey()));
+        assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
+    }
+
+    @Test void successMarkerCannotHideMissingOrConflictingHashOwnership() {
+        reserve(message());
+        redis.opsForHash().delete(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId));
+        assertEquals(-1, reservations.reserve(message()));
+        redis.opsForHash().put(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId), String.valueOf(orderId + 1));
+        assertEquals(-1, reservations.reserve(message()));
+        assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test void expiringHashCannotAuthorizeLookupOrReservation() {
+        reserve(message());
+        redis.expire(SECKILL_CLAIM_OWNER_KEY + voucherId, 1, TimeUnit.HOURS);
+        assertThrows(SeckillUnavailableException.class, () -> reservations.findOriginalOrderId(voucherId, userId));
+        assertEquals(-1, reservations.reserve(message()));
+        assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test void concurrentDifferentOrdersForSameUserReserveOnlyOnce() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Long>> jobs = new ArrayList<>();
+        try {
+            for (int i = 0; i < 12; i++) {
+                VoucherOrder candidate = extraOrder().setUserId(userId);
+                jobs.add(pool.submit(() -> { start.await(); return reservations.reserve(candidate); }));
+            }
+            start.countDown();
+            int successful = 0;
+            for (Future<Long> job : jobs) {
+                long result = job.get(10, TimeUnit.SECONDS);
+                if (result == 0) successful++;
+                else assertEquals(2, result);
+            }
+            assertEquals(1, successful);
+            Long original = reservations.findOriginalOrderId(voucherId, userId);
+            assertNotNull(original);
+            assertTrue(reservations.hasSuccessMarker(original));
+            assertEquals(1L, redis.opsForHash().size(SECKILL_CLAIM_OWNER_KEY + voucherId));
+            assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+            assertFalse(redis.hasKey(legacyPurchaserKey()));
         } finally { pool.shutdownNow(); }
     }
 

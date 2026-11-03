@@ -20,9 +20,8 @@ public class RedisConstants {
     public static final Long LOCK_SHOP_TTL = 10L;
 
     public static final String SECKILL_STOCK_KEY = "seckill:stock:";
-    /** 秒杀成功 claim 用户集合（Lua 脚本 SADD 写入，一人一单与缺单核查依据） */
-    public static final String SECKILL_ORDER_KEY = "seckill:order:";
-    /** Hash: userId -> original orderId. No short TTL: must survive MQ retries / manual replay. */
+    /** Hash: userId -> original orderId; sole purchaser record for deduplication, lookup and refunds.
+     * No short TTL: must survive MQ retries / manual replay. */
     public static final String SECKILL_CLAIM_OWNER_KEY = "seckill:claim-owner:";
     /** Permanent idempotency marker for cancelled order stock refunds; no automatic cleanup. */
     public static final String SECKILL_STOCK_RETURNED_KEY = "seckill:stock-returned:";

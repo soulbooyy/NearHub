@@ -63,7 +63,7 @@ class OrderCancellationIntegrationTest extends OrderIntegrationSupport {
         assertDone();
         assertEquals(1, tasks.selectById(orderId).getAttempts());
         assertEquals(String.valueOf(orderId), redis.opsForHash().get(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId)));
-        assertTrue(redis.opsForSet().isMember(SECKILL_ORDER_KEY + voucherId, String.valueOf(userId)));
+        assertFalse(redis.hasKey(legacyPurchaserKey()));
     }
 
     @Test void mysqlStockFailureRollsBackCancellation() {
@@ -310,7 +310,7 @@ class OrderCancellationIntegrationTest extends OrderIntegrationSupport {
     @Test void ownershipSurvivesTransactionRecordLossAndRefundMarkerHasNoTtl() {
         createExpired();
         assertEquals(-1L, redis.getExpire(SECKILL_CLAIM_OWNER_KEY + voucherId));
-        assertEquals(-1L, redis.getExpire(SECKILL_ORDER_KEY + voucherId));
+        assertFalse(redis.hasKey(legacyPurchaserKey()));
         redis.delete(SECKILL_TXN_KEY + orderId);
         service.cancelTimeoutOrder(orderId); worker.process(orderId); assertDone();
         assertEquals(1L, redisReturns.returnStock(tasks.selectById(orderId)));
@@ -322,6 +322,7 @@ class OrderCancellationIntegrationTest extends OrderIntegrationSupport {
         assertEquals(-1L, redis.getExpire(SECKILL_CLAIM_OWNER_KEY + voucherId));
         worker.process(orderId); assertDone();
         VoucherOrder repeat = reservedMessage(); repeat.setId(orderId + 1);
+        assertEquals(2, reservations.reserve(repeat));
         assertThrows(IllegalStateException.class, () -> service.createOrderFromMQ(repeat));
         assertEquals("10", redisStock());
     }
@@ -331,7 +332,7 @@ class OrderCancellationIntegrationTest extends OrderIntegrationSupport {
         assertEquals(-1, reservations.reserve(message()));
         assertThrows(RuntimeException.class, () -> service.createOrderFromMQ(message()));
         assertEquals("10", redisStock()); assertEquals(10, stock()); assertEquals(0, count());
-        assertFalse(redis.opsForSet().isMember(SECKILL_ORDER_KEY + voucherId, String.valueOf(userId)));
+        assertFalse(redis.hasKey(legacyPurchaserKey()));
     }
 
     @Test void oldCancelledOrderIsNotBlindlyBackfilledOrRefunded() {

@@ -201,9 +201,9 @@ class OrderConsumptionIntegrationTest extends OrderIntegrationSupport {
     }
 
     @Test
-    void unownedLegacyClaimRequiresManualReview() {
-        redis.opsForSet().add(SECKILL_ORDER_KEY + voucherId, String.valueOf(userId));
-        assertThrows(com.hmdp.service.SeckillUnavailableException.class, () -> service.createOrderFromMQ(message()));
+    void legacySetAloneCannotAuthorizeConsumption() {
+        redis.opsForSet().add(legacyPurchaserKey(), String.valueOf(userId));
+        assertThrows(IllegalStateException.class, () -> service.createOrderFromMQ(message()));
         assertEquals(10, stock());
         assertEquals(0, count());
         assertNull(redis.opsForHash().get(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId)));
@@ -300,7 +300,20 @@ class OrderConsumptionIntegrationTest extends OrderIntegrationSupport {
     void reconciliationDoesNotRepublishOrReleaseUnresolvedClaim() throws Exception {
         jdbc.update("UPDATE tb_seckill_voucher SET stock=0,end_time=? WHERE voucher_id=?", LocalDateTime.now().minusMinutes(5), voucherId);
         assertThrows(StockRejectedException.class, () -> service.createOrderFromMQ(reservedMessage()));
-        reconcile.reconcile();
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger(com.hmdp.task.SeckillReconcileTask.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> captured =
+                new ch.qos.logback.core.read.ListAppender<>();
+        captured.start(); logger.addAppender(captured);
+        try {
+            assertFalse(redis.hasKey(legacyPurchaserKey()));
+            reconcile.reconcile();
+            assertTrue(captured.list.stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .anyMatch(text -> text.contains("ORDER_MISSING_AUDIT")
+                            && text.contains("voucherId=" + voucherId)
+                            && text.contains("userId=" + userId)
+                            && text.contains("originalOrderId=" + orderId)));
+        } finally { logger.detachAppender(captured); captured.stop(); }
         assertEquals(0, stock());
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
         verify(producer, never()).sendOrderCreateInTransaction(any(), any());

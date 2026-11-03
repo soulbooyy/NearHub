@@ -41,7 +41,7 @@ public class SeckillReservationService {
         validateIdentity(order);
         try {
             Long result = redis.execute(SCRIPT, Arrays.asList(SECKILL_TXN_KEY + order.getId(),
-                            SECKILL_STOCK_KEY + order.getVoucherId(), SECKILL_ORDER_KEY + order.getVoucherId(),
+                            SECKILL_STOCK_KEY + order.getVoucherId(),
                             SECKILL_CLAIM_OWNER_KEY + order.getVoucherId()),
                     order.getVoucherId().toString(), order.getUserId().toString(), order.getId().toString(),
                     String.valueOf(markerTtlSeconds));
@@ -68,12 +68,9 @@ public class SeckillReservationService {
     public Long findOriginalOrderId(Long voucherId, Long userId) {
         try {
             Object owner = redis.opsForHash().get(SECKILL_CLAIM_OWNER_KEY + voucherId, userId.toString());
-            boolean member = Boolean.TRUE.equals(redis.opsForSet().isMember(SECKILL_ORDER_KEY + voucherId, userId.toString()));
-            if ((owner != null) != member) throw new SeckillUnavailableException("Conflicting purchaser evidence");
             if (owner == null) return null;
-            if (!Long.valueOf(-1).equals(redis.getExpire(SECKILL_CLAIM_OWNER_KEY + voucherId))
-                    || !Long.valueOf(-1).equals(redis.getExpire(SECKILL_ORDER_KEY + voucherId))) {
-                throw new SeckillUnavailableException("Expiring purchaser evidence");
+            if (!Long.valueOf(-1).equals(redis.getExpire(SECKILL_CLAIM_OWNER_KEY + voucherId))) {
+                throw new SeckillUnavailableException("Expiring ownership evidence");
             }
             Long id = Long.valueOf(owner.toString());
             if (id <= 0) throw new NumberFormatException("nonpositive owner");

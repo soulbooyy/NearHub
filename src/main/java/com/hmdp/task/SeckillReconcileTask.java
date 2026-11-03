@@ -20,6 +20,7 @@ import org.springframework.stereotype.Component;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -96,9 +97,9 @@ public class SeckillReconcileTask {
                 .list();
         for (SeckillVoucher voucher : vouchers) {
             Long voucherId = voucher.getVoucherId();
-            Set<String> claimed = stringRedisTemplate.opsForSet()
-                    .members(RedisConstants.SECKILL_ORDER_KEY + voucherId);
-            if (claimed == null || claimed.isEmpty()) {
+            Map<Object, Object> claimed = stringRedisTemplate.opsForHash()
+                    .entries(RedisConstants.SECKILL_CLAIM_OWNER_KEY + voucherId);
+            if (claimed.isEmpty()) {
                 continue;
             }
             List<VoucherOrder> created = voucherOrderService.lambdaQuery()
@@ -109,13 +110,13 @@ public class SeckillReconcileTask {
                     .map(o -> String.valueOf(o.getUserId()))
                     .collect(Collectors.toSet());
 
-            for (String userId : claimed) {
+            for (Map.Entry<Object, Object> claim : claimed.entrySet()) {
+                String userId = claim.getKey().toString();
                 if (createdSet.contains(userId)) {
                     continue;
                 }
                 unresolved.add(voucherId);
-                Object owner = stringRedisTemplate.opsForHash().get(
-                        RedisConstants.SECKILL_CLAIM_OWNER_KEY + voucherId, userId);
+                Object owner = claim.getValue();
                 log.error("ORDER_MISSING_AUDIT: reservation without order, voucherId={}, userId={}, originalOrderId={}; inspect ownership/stock/DLQ manually, do not create a new orderId",
                         voucherId, userId, owner);
             }

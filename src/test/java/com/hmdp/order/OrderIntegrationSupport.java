@@ -115,7 +115,7 @@ abstract class OrderIntegrationSupport {
         jdbc.update("DELETE FROM tb_order_stock_compensation WHERE voucher_id=?", voucherId);
         jdbc.update("DELETE FROM tb_voucher_order WHERE voucher_id=?", voucherId);
         jdbc.update("DELETE FROM tb_seckill_voucher WHERE voucher_id=?", voucherId);
-        redis.delete(Arrays.asList(SECKILL_STOCK_KEY + voucherId, SECKILL_ORDER_KEY + voucherId,
+        redis.delete(Arrays.asList(SECKILL_STOCK_KEY + voucherId, legacyPurchaserKey(),
                 SECKILL_CLAIM_OWNER_KEY + voucherId, SECKILL_TXN_KEY + (orderId + 1), SECKILL_TXN_KEY + orderId,
                 SECKILL_STOCK_RETURNED_KEY + orderId, SECKILL_STOCK_RETURNED_KEY + (orderId + 1)));
     }
@@ -134,8 +134,12 @@ abstract class OrderIntegrationSupport {
         com.hmdp.dto.UserDTO user = new com.hmdp.dto.UserDTO(); user.setId(id); UserHolder.saveUser(user);
     }
     VoucherOrder reservedMessage() { VoucherOrder order = message(); reserve(order); return order; }
+    // Only tests reference this retired key: assert no new writes and clean migration fixtures.
+    String legacyPurchaserKey() { return "seckill:order:" + voucherId; }
+
     void reserve(VoucherOrder order) {
         assertEquals(0, reservations.reserve(order));
+        assertFalse(redis.hasKey(legacyPurchaserKey()), "Reservation must not create a purchase Set");
     }
 
 }
