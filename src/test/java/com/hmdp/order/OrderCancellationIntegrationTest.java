@@ -311,7 +311,7 @@ class OrderCancellationIntegrationTest extends OrderIntegrationSupport {
         createExpired();
         assertEquals(-1L, redis.getExpire(SECKILL_CLAIM_OWNER_KEY + voucherId));
         assertFalse(redis.hasKey(legacyPurchaserKey()));
-        redis.delete(SECKILL_TXN_KEY + orderId);
+        redis.delete(LEGACY_TXN_KEY + orderId);
         service.cancelTimeoutOrder(orderId); worker.process(orderId); assertDone();
         assertEquals(1L, redisReturns.returnStock(tasks.selectById(orderId)));
         assertDone();

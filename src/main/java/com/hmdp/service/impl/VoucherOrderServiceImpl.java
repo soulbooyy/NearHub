@@ -58,7 +58,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         validateIdentity(message);
         OrderPersistenceResult result = persistenceService.findExisting(message);
         if (result == null) {
-            // Permanent ownership survives marker expiry. Never reserve or deduct Redis stock here.
+            // Permanent ownership authorizes creation. Never reserve or deduct Redis stock here.
             if (!Objects.equals(message.getId(), reservations.findOriginalOrderId(message.getVoucherId(), message.getUserId()))) {
                 throw new IllegalStateException("CREATE without confirmed reservation: " + message.getId());
             }
@@ -145,9 +145,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             data.put("status", "SUCCESS"); data.put("orderStatus", order.getStatus());
             return Result.ok(data);
         }
-        // A plain success marker carries no user identity. Without a DB order or an authenticated
-        // voucher/owner lookup, do not reveal whether somebody else's order was reserved.
-        data.put("status", knownOwner && reservations.hasSuccessMarker(orderId) ? "PROCESSING" : "UNKNOWN");
+        // Only an authenticated voucher/owner lookup identifies a pending reservation.
+        // PROCESSING means reservation evidence exists, not a guarantee of eventual delivery.
+        data.put("status", knownOwner ? "PROCESSING" : "UNKNOWN");
         return Result.ok(data);
     }
 }

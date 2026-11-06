@@ -9,11 +9,11 @@
 
 ### 1. 单一秒杀提交链路
 
-登录鉴权 → Redis ZSET + Lua 用户限流 → 生成订单 ID → 发送半消息 → 本地回调 Lua 原子预扣并写入带 TTL 的成功标记 → COMMIT → 消费者独立 MySQL 事务落库。没有模式开关、消费者预占或订单创建分布式锁。
+登录鉴权 → Redis ZSET + Lua 用户限流 → 生成订单 ID → 发送半消息 → 本地回调 Lua 原子预扣并最后写入归属 Hash → COMMIT → 消费者独立 MySQL 事务落库。没有模式开关、消费者预占或订单创建分布式锁。
 
 ### 2. 事务消息与异常边界
 
-成功标记为 `seckill:txn:{orderId} = 1`，默认保留 24 小时。Lua 成功返回 COMMIT；库存不足或重复购买返回 ROLLBACK；异常返回 UNKNOWN，由 Broker 回查标记。缺失标记在消息年龄不足 60 秒时暂缓决策，之后 ROLLBACK。宽限不能阻止暂停过久的本地回调在回滚后继续预扣；标记过期/丢失也可能导致已预扣事务被回滚。Lua 运行错误不会自动撤销已执行的写入，异常需要核账。
+归属 Hash `seckill:claim-owner:{voucherId}[userId] = originalOrderId` 是唯一 Redis 预扣成功证据，不设置 TTL。Lua 成功返回 COMMIT；库存不足或重复购买返回 ROLLBACK；异常返回 UNKNOWN。Broker 回查精确匹配券、用户与订单 ID；归属缺失时消息年龄不足 60 秒暂缓决策，之后 ROLLBACK。宽限不能阻止暂停过久的回调在回滚后继续预扣；Hash 丢失和 Lua 部分写入仍需核账。已删除独立 `seckill:txn:*` 成功标记，不再因其 TTL 到期误判。
 
 ### 3. 一人一单与消费幂等
 
@@ -125,14 +125,15 @@ flowchart TD
     C[客户端] --> E[登录鉴权与秒杀 POST 用户限流]
     E --> P[生成订单 ID]
     P --> H[RocketMQ 半消息]
-    H --> T[本地回调 Lua 预扣与成功标记 TTL]
-    T --> R[(Redis 库存、归属 Hash、成功标记)]
+    H --> T[本地回调 Lua 预扣，最后写归属 Hash]
+    T --> R[(Redis 库存、归属 Hash)]
     T --> J{Lua 结果}
     J -->|成功| Q[COMMIT]
     J -->|库存不足或重复购买| X[ROLLBACK]
     J -->|异常或未知| U[UNKNOWN]
-    U --> RC[Broker 回查成功标记]
-    RC -->|存在| Q
+    U --> RC[Broker 核验原订单归属]
+    RC -->|三项身份匹配| Q
+    RC -->|归属另一订单| X
     RC -->|缺失且宽限结束| X
     RC -->|Redis 故障或仍在宽限内| U
     Q --> W[消费者核验归属，独立 MySQL 事务]
@@ -150,7 +151,7 @@ flowchart TD
     V --> R
 ```
 
-半消息发送前不执行预扣，也不登记准备状态。回查只读取成功标记；消费者不执行预扣，也不依赖短期成功标记。独立事务、唯一索引和支付/关单 CAS 保留；没有双模式或订单创建锁。
+半消息发送前不执行预扣，也不登记准备状态。回查核验归属 Hash 的原订单 ID；消费者不执行预扣，首次建单同样核验归属。独立事务、唯一索引和支付/关单 CAS 保留；没有双模式或订单创建锁。
 
 ### 商铺更新与轻量缓存失效
 
@@ -195,9 +196,9 @@ Redis 商铺对象仍不设置物理过期；逻辑过期后返回旧值并尝�
 
 ### 购买记录只保留归属 Hash
 
-购买资格统一保存在 `seckill:claim-owner:{voucherId}`：字段为 `userId`，值为 `originalOrderId`。`HGET` 无结果表示尚未取得资格；有结果则同时用于一人一单、重复回调、消费归属、按券找回原订单和库存回补。取消订单只返还库存，不删除 Hash 字段。Hash 仍不设置自动 TTL。
+购买资格统一保存在 `seckill:claim-owner:{voucherId}`：字段为 `userId`，值为 `originalOrderId`。`HGET` 有结果时同时用于一人一单、预扣成功确认、重复回调、消费归属、按券找回原订单和库存回补；无结果不证明历史上没有扣过库存，可能存在部分写入或数据丢失。取消订单只返还库存，不删除 Hash 字段。Hash 仍不设置自动 TTL。
 
-预扣脚本只接收成功标记、库存、归属 Hash 三个 Key，写入顺序为 `DECR → HSET → SET ... EX`。回补脚本只接收库存、归属 Hash、永久回补标记三个 Key。消费者和查询仍严格核对原订单 ID；成功标记过期后仍可通过 Hash 核验消费。接口、结果状态和限流范围不变。
+预扣脚本只接收库存、归属 Hash 两个 Key，写入顺序为 `DECR → HSET → return 0`；HSET 后没有其他业务写入。回补脚本仍接收库存、归属 Hash、永久回补标记三个 Key。消费者和查询严格核对原订单 ID；接口路径及限流范围不变。
 
 废弃 `seckill:order:{voucherId}` 购买 Set，运行代码不再读写它。已有环境须停旧实例及在途请求，核对旧 Set 的每个用户都有合法 Hash 归属后统一切换，再按 `seckill:order:*` 精确前缀分批清理。Set-only 数据不能直接丢弃，需要结合订单/MQ 核实；不能凭空补订单 ID。新旧版本不能混跑，否则旧版会因新预占没有 Set 成员而报错。业务 Hash、库存、事务成功标记和回补幂等标记不属于本次清理范围。
 
@@ -205,70 +206,70 @@ Redis 商铺对象仍不设置物理过期；逻辑过期后返回旧值并尝�
 
 2026-11-03 本地验证：100 项订单测试、16 项限流测试通过，打包成功；使用真实本地 MySQL/Redis，MQ 传输为 mock，未验证真实 Broker 故障。存量清理检查覆盖本项目 Redis 全部 16 个逻辑库，未发现旧购买 Set，实际删除 0 个 Key，原有 3 个 Key 保持不变。详见 [重构记录](docs/seckill-refactor.md)。
 
-### 成功标记、回查与结果查询
+### 归属成功凭据、回查与结果查询
 
-`SeckillReservationService.reserve()` 只在半消息的本地事务回调中执行 `seckill.lua`。脚本先校验参数、Key 类型、库存格式和归属一致性，再执行 DECR、HSET 原订单归属、SET 成功标记并 EXPIRE（通过 `SET ... EX` 同一命令完成）。没有四状态协议、准备登记或诊断字段。
+`SeckillReservationService.reserve()` 只在半消息的本地事务回调中执行 `seckill.lua`。脚本先校验参数、Key 类型、永久 TTL、库存格式和归属，再扣库存并最后 HSET 原订单归属。没有独立事务成功标记、四状态协议或准备登记。只有预扣脚本允许创建归属，不得用人工填充 Hash 代替库存预扣。
 
 | 情况 | 本地回调 / Broker 回查 |
 | --- | --- |
-| Lua 正常完成 | COMMIT；成功标记默认 24 小时 TTL |
-| 库存不足 / 其他订单已占购买资格 | 本地回调 ROLLBACK，不写标记 |
-| 同订单再次回调，标记和归属均正常 | COMMIT，不重复预扣、不续期 |
-| 同订单归属存在但标记缺失 | 本地回调 UNKNOWN，不补写标记、不再次预扣 |
-| 回查标记存在且值为 1 | COMMIT |
-| 回查标记缺失、消息出生不足 60 秒 | UNKNOWN，等待 Broker 后续回查 |
-| 回查标记缺失、超过宽限 | ROLLBACK，同时记录 `SECKILL_MARKER_MISSING_ROLLBACK` |
-| Redis 查询故障、旧 Hash/非法标记、消息时间缺失或在未来 | UNKNOWN；需要核查，不会无限保证重试 |
+| Lua 正常完成 | COMMIT；归属 Hash 不设置 TTL |
+| 库存不足 / 另一订单已占购买资格 | 本地回调 ROLLBACK，不改变归属 |
+| 同订单再次回调，库存结构和归属正常 | COMMIT，不重复预扣；库存为 0 也允许幂等返回 |
+| 回查的券、用户、原订单 ID 精确匹配 | COMMIT |
+| 回查找到该用户该券的另一个合法订单 ID | ROLLBACK，不能将候选订单当成原订单 |
+| 回查归属缺失、消息出生不足 60 秒 | UNKNOWN，等待 Broker 后续回查 |
+| 回查归属缺失、超过宽限 | ROLLBACK，记录 `SECKILL_OWNERSHIP_MISSING_ROLLBACK` |
+| Redis 故障、错误类型、非法原订单 ID、已有归属带 TTL | UNKNOWN |
+| 归属缺失且消息时间缺失或在未来 | UNKNOWN，不提前回滚 |
 
-**缺失标记不证明没有扣库存。** 它可能表示 Lua 尚未开始、标记过期、Redis 丢失数据或 Lua 部分写入。短暂宽限只是减少过早回滚，没有迟到回调的原子隔离。超过宽限后回调恢复执行，或预扣成功后标记丢失，仍可能出现库存已扣但消息被回滚；不再自动恢复缺单。
+**缺失归属不证明没有扣库存。** 它可能表示 Lua 尚未开始、Redis 数据丢失或 Lua 部分写入。宽限只减少过早回滚，不隔离迟到回调。Hash 已丢失时再次执行预扣可能再次扣库存；不再有第二份成功标记检测这种不一致，也不自动恢复缺单。
 
 | 配置 / 环境变量 | 默认 | 约束及取舍 |
 | --- | --- | --- |
-| `seckill.transaction.marker-ttl-seconds` / `SECKILL_TX_MARKER_TTL_SECONDS` | 86400 秒 | 正整数且不超过 2147483647；仅成功预扣写入，读取/重复回调不续期 |
-| `seckill.transaction.check-grace-ms` / `SECKILL_TX_CHECK_GRACE_MS` | 60000 ms | 非负且小于标记 TTL；按 RocketMQ 原始 `bornTimestamp` 计算，要求主机时钟同步 |
+| `seckill.transaction.check-grace-ms` / `SECKILL_TX_CHECK_GRACE_MS` | 60000 ms | 非负；按 RocketMQ 原始 `bornTimestamp` 计算，要求主机时钟同步；不保证 Broker 无限回查 |
 
-24 小时是本项目对常见短期故障留余量的初始保留策略，**不是 Broker 最晚回查时间的数学上界**。RocketMQ 4.9.7 源码默认首次回查门槛 6 秒、检查间隔 60 秒、最多检查 15 次；停机、积压、调度延迟意味着不能把 `15 × 60 秒` 当作严格上界。上线应核对实际 Broker 配置、预计最长故障/积压恢复时间和时钟余量，必要时调长 TTL；超过保留窗口的恢复转人工。[BrokerConfig 源码](https://github.com/apache/rocketmq/blob/rocketmq-all-4.9.7/common/src/main/java/org/apache/rocketmq/common/BrokerConfig.java)、[事务回查实现](https://github.com/apache/rocketmq/blob/rocketmq-all-4.9.7/broker/src/main/java/org/apache/rocketmq/broker/transaction/queue/TransactionalMessageServiceImpl.java)。
-
-只有成功标记自动到期；原订单归属 Hash 和库存回补幂等标记继续保留。此改动控制事务证据增长，**没有解决所有 Redis 历史业务数据的归档**。不再 SCAN 事务 Key；现有按已结束券的 Hash/订单核查仍随历史活动增加，需要容量监控。
+已删除 `marker-ttl-seconds` / `SECKILL_TX_MARKER_TTL_SECONDS`。不再创建、查询或 SCAN `seckill:txn:*`。归属 Hash、回补幂等标记和补偿任务仍需保留；尚未实现历史业务数据归档。
 
 提交正常成功返回原订单 ID；发送或执行结果不确定返回 HTTP 202 + 原订单 ID。查询契约：
 
-- `GET /voucher-order/seckill/result/{orderId}`：MySQL 已落库时校验当前用户，返回 `SUCCESS` 和 `orderStatus`；尚未查到时统一 `UNKNOWN`。纯 String 标记无法证明用户身份，因此不披露未落库订单是否预占，不返回虚假的 NOT_FOUND。
-- `GET /voucher-order/seckill/result/by-voucher/{voucherId}`：先查当前用户的 MySQL 订单，再查当前用户在归属 Hash 中的原订单 ID。归属正常且标记存在返回 `PROCESSING`；有归属但标记缺失返回 `UNKNOWN`，两者均带原订单 ID；健康读取下没有订单/归属返回 `NOT_FOUND`。PROCESSING 不是最终落库保证。
-- 按券查询的 Redis 故障、数据库查询失败为 HTTP 503；订单 ID 查询在未落库时不读 Redis。支付和已落库结果仍严格检查用户。已取消订单仍是已落库结果，具体状态由 `orderStatus` 表示。
+- `GET /voucher-order/seckill/result/{orderId}`：MySQL 已落库时校验当前用户，返回 `SUCCESS` 和 `orderStatus`；未落库时统一 `UNKNOWN`。仅凭订单 ID 无法定位券 Hash 并确认身份，不扫描全库或披露他人预占状态。
+- `GET /voucher-order/seckill/result/by-voucher/{voucherId}`：先查当前用户的 MySQL 订单，再查当前用户的归属 Hash。合法归属且未落库时返回 `PROCESSING` 和原订单 ID；健康读取下没有订单/归属返回 `NOT_FOUND`。PROCESSING 仅代表存在预扣证据，不保证消息仍在消费或最终自动落库。
+- 按券查询的 Redis 故障、数据库查询失败为 HTTP 503；订单 ID 查询在未落库时不读 Redis。支付和已落库结果仍严格检查用户；已取消订单返回 `SUCCESS`，由 `orderStatus` 表示实际状态。
 
 ### 消费落库、重试与人工核查
 
 `VoucherOrderPersistenceService` 的独立 Spring 事务包含幂等查询、MySQL 条件扣库存与插入订单。主键和 `(user_id, voucher_id)` 唯一索引承担并发约束；异常离开事务代理并完成回滚后重新查库分类，不手工回补已回滚事务。
 
 - 已落库同订单重投：核对用户与券，复用订单，不再访问 Redis 预占证据；未支付订单继续发送延迟关单消息。
-- 首次消费：核验归属 Hash 的原订单 ID，**不要求成功标记仍存在**，因此标记到期不阻断已 COMMIT 消息的延迟消费。消费者没有预扣或订单分布式锁。
+- 首次消费：核验归属 Hash 的原订单 ID，独立事务成功标记已删除。消费者没有预扣或订单分布式锁。
 - 同订单号身份冲突、其他订单号占用购买资格、无归属或归属冲突：异常重试，不能把候选订单号报告为成功。
 - Redis 已预扣而 MySQL 库存不足：保留购买资格，回滚 MySQL 事务并触发 MQ 重试，不盲目回补 Redis。
 - `ORDER_MAX_RECONSUME_TIMES` 默认 3；处理失败始终返回 `RECONSUME_LATER`，耗尽后由 Broker 处理死信。日志 `ORDER_MANUAL_REVIEW` 提示检查 DLQ。自动缺单恢复 Worker、任务表读写和原订单事务消息重投已移除。
 
-缺单告警仅在活动结束 2 分钟后读取归属 Hash 与 MySQL 订单做比较。人工处理须核验原订单 ID、用户/券、两侧库存、购买归属、MQ/DLQ、关单及回补状态；确认是已提交但未落库的 CREATE 后可重放原消费消息，不能生成新订单 ID 或删除购买资格重试。**不要通过事务发送接口盲目重发旧半消息**：缺失标记时本地回调不会重建成功证据。证据不足时停止自动处理。
+缺单告警仅在活动结束 2 分钟后读取归属 Hash 与 MySQL 订单做比较。人工处理须核验原订单 ID、用户/券、两侧库存、购买归属、MQ/DLQ、关单及回补状态；确认是已提交但未落库的 CREATE 后可重放原消费消息，不能生成新订单 ID 或删除购买资格重试。**不要盲目重发旧半消息**：同订单归属仍在时可幂等确认，但归属已丢失时重发可能重复预扣。证据不足时停止自动处理。
 
 ### 已接受的故障边界
 
 | 故障 | 处理与限制 |
 | --- | --- |
-| Lua 成功，Producer 在 COMMIT 前退出，或 Lua 响应丢失 | 标记仍可读时由 Broker 回查 COMMIT；测试只直接调用回调，不等于真实 Broker 重启验证 |
+| Lua 成功，Producer 在 COMMIT 前退出，或 Lua 响应丢失 | 归属身份仍匹配时由 Broker 回查 COMMIT；测试只直接调用回调，不等于真实 Broker 重启验证 |
 | Lua 前就回查 | 宽限内 UNKNOWN；回调暂停超过宽限仍可能在 ROLLBACK 后预扣，接受人工核查 |
-| 标记到期/丢失后回查 | 宽限已结束则 ROLLBACK，可能留下缺单预占；不做自动重投 |
+| 归属丢失后回查或回调重放 | 回查在宽限结束后 ROLLBACK；重新预扣可能再次扣库存。独立标记已移除，接受人工核查 |
 | MySQL 消费失败 / 提交后 ACK 丢失 | MQ 有限重试 + MySQL 回滚/唯一键幂等；重试耗尽进入人工 DLQ 处理 |
 | Lua 运行中途错误 | Redis 不撤销此前写入。预校验降低可预见错误；OOM、异常停机、数据丢失仍可能留下部分写入，不能声称安全自动恢复 |
 | 部分写入只有扣库存、没有归属 | Hash 差集无法找到该笔订单；只能从库存差异、请求/事务错误日志和 MQ 证据核查；再次执行 Lua 甚至可能再次扣减，不承诺自动防护 |
-| 成功标记到期后旧 CREATE 再次消费 | 已落库用 MySQL 幂等，未落库用长期归属核验；所有相关证据被丢弃后不承诺安全恢复 |
-| 取消后重复回补 | 原持久化任务 + 永久回补幂等标记，保留归属 Hash，事务成功标记是否存在无影响 |
+| 旧 CREATE 再次消费 | 已落库用 MySQL 幂等，未落库用长期归属核验；所有相关证据被丢弃后不承诺安全恢复 |
+| 取消后重复回补 | 原持久化任务 + 永久回补幂等标记，保留归属 Hash，不依赖已废弃的事务成功标记 |
 
 没有 Redis、MQ、MySQL 全局强一致承诺。自动缺单恢复的移除换取了更小的协议和维护成本；人工核查与日志告警是运维责任，目前未接外部告警平台。
 
 ### 升级兼容边界
 
-此前四状态事务证据改为成功标记，是事务 Hash → String 的协议切换，**不支持新旧版本混跑**。先关闭旧入口，在旧版本中排空/核查半消息、消费重试与未完成缺单恢复任务；停旧 Worker/消费者并核对存量预占后统一升级。新代码遇到旧事务 Hash 不覆盖，回查返回 UNKNOWN；因此必须在切换前解决未决事务，不能依赖新回查完成旧协议。
+本次从“归属 Hash + 短期事务成功标记”切换为“归属 Hash 单一预扣证据”，**不支持新旧版本混跑**：旧监听器读不到新请求的标记，可能错误回滚。升级前停止入口、处理在途回调及未决消息并核对存量归属，统一切换生产者/监听器和应用实例；回滚旧版也必须先核账。
 
-保留 `V003__seckill_recovery_task.sql` 历史迁移及初始化迁移顺序，已有表不 DROP、不清空；新代码不读取或执行该表的任务。未完成旧任务需在旧版完成或导出人工核查，不能静默忽略。新标记 TTL 不会追溯清理旧永久事务 Hash，旧事务 Hash 仅在完成消息/订单核验、排除旧回调与重放之后，由运维按原订单逐批归档清理，本次没有执行旧事务 Hash 清理。回滚版本也须先核账。
+新代码不读写旧 `seckill:txn:*`，它们不能单独授权提交；旧 String 标记可按原 TTL 自然过期，旧四状态 Hash 不会自动清理。历史 Hash 归属须核实库存、订单、回补与消息，不能无条件把不可信的旧字段视为成功预扣。禁止为了切换删除归属、库存或 `seckill:stock-returned:*`。本轮未清理 Redis 业务数据。
+
+保留 `V003__seckill_recovery_task.sql` 历史迁移及初始化迁移顺序，已有表不 DROP、不清空；新代码不执行该表任务。旧未完成任务和更早的四状态协议遗留数据须在升级前完成或导出人工核查。
 
 ### 关单事务与 Redis 回补
 
@@ -306,7 +307,9 @@ Redis 商铺对象仍不设置物理过期；逻辑过期后返回旧值并尝�
 
 `test-orders` 为本地 Compose MySQL 创建独立的 `hmdp_order_test` 数据库，复制订单与秒杀券表结构并执行库存回补任务表迁移；Redis 使用 DB 15。测试使用唯一 ID 并清理自己的数据，不启动定时调度或真实 MQ 消费者。
 
-覆盖 MySQL 回滚/条件库存/并发唯一键、成功标记 TTL/回查宽限/重复回调、标记到期后的消费、Lua 部分写入边界、HTTP 提交和双查询、支付关单竞争、持久化库存回补的租约接管与旧令牌隔离。数据库子进程测试验证 JDBC 事务中断回滚/提交后重放；回查恢复测试使用新监听器对象，不等于真实生产者进程重启。
+覆盖 MySQL 回滚/条件库存/并发唯一键、归属成功证据/回查宽限/重复回调、旧事务标记失效后的消费、Lua 部分写入边界、HTTP 提交和双查询、支付关单竞争、持久化库存回补的租约接管与旧令牌隔离。数据库子进程测试验证 JDBC 事务中断回滚/提交后重放；回查恢复测试使用新监听器对象，不等于真实生产者进程重启。
+
+2026-11-04 归属成功凭据版本验证：106 项订单测试、16 项限流测试全部通过，干净打包成功；新增回查身份匹配、耗尽库存后的幂等回调、取消后重放及唯一归属丢失的故障边界覆盖。
 
 **MQ 传输为 mock，未进行真实 Broker 故障注入、完整网络端到端演练或性能压测；没有 QPS、P95/P99 结论。** 已执行测试、每阶段修改和尚未验证的风险见 [分阶段重构记录](docs/seckill-refactor.md)。
 

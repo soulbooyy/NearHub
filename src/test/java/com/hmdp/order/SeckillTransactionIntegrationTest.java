@@ -38,14 +38,14 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         return message;
     }
 
-    @Test void missingMarkerGetsGraceThenRollbackWithoutWritingRedis() {
+    @Test void missingOwnershipGetsGraceThenRollbackWithoutWritingRedis() {
         MessageExt msg = payload(message());
         msg.setBornTimestamp(System.currentTimeMillis());
         assertEquals(LocalTransactionState.UNKNOW, listener(reservations).checkLocalTransaction(msg));
         msg.setBornTimestamp(System.currentTimeMillis() - 120000);
         assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(msg));
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
     }
 
     @Test void invalidOrFutureMessageTimestampCannotTriggerEarlyRollback() {
@@ -56,25 +56,23 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         assertEquals(LocalTransactionState.UNKNOW, listener(reservations).checkLocalTransaction(msg));
     }
 
-    @Test void reservationIsIdempotentAndWritesExpiringSuccessMarker() {
+    @Test void reservationIsIdempotentAndWritesPermanentOwnership() {
         SeckillTxContext ctx = new SeckillTxContext(message());
         assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).executeLocalTransaction(payload(message()), ctx));
         assertEquals(0, ctx.getLuaResult());
-        assertEquals("1", redis.opsForValue().get(SECKILL_TXN_KEY + orderId));
-        long ttl = redis.getExpire(SECKILL_TXN_KEY + orderId);
-        assertTrue(ttl > 0 && ttl <= 86400);
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
+        assertEquals(-1L, redis.getExpire(SECKILL_CLAIM_OWNER_KEY + voucherId));
         assertEquals(0, reservations.reserve(message()));
-        assertTrue(redis.getExpire(SECKILL_TXN_KEY + orderId) <= ttl);
         assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
         assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
     }
 
-    @Test void noStockRollsBackWithoutCreatingMarker() {
+    @Test void noStockRollsBackWithoutCreatingOwnership() {
         redis.opsForValue().set(SECKILL_STOCK_KEY + voucherId, "0");
         assertEquals(LocalTransactionState.ROLLBACK_MESSAGE,
                 listener(reservations).executeLocalTransaction(payload(message()), new SeckillTxContext(message())));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
         assertNull(reservations.findOriginalOrderId(voucherId, userId));
     }
@@ -84,7 +82,7 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         VoucherOrder other = new VoucherOrder().setId(orderId + 1).setUserId(userId).setVoucherId(voucherId);
         assertEquals(LocalTransactionState.ROLLBACK_MESSAGE,
                 listener(reservations).executeLocalTransaction(payload(other), new SeckillTxContext(other)));
-        assertFalse(reservations.hasSuccessMarker(other.getId()));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + other.getId()));
         assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
@@ -98,29 +96,29 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         SeckillTxContext ctx = new SeckillTxContext(message());
         assertEquals(LocalTransactionState.UNKNOW, listener(lostResponse).executeLocalTransaction(payload(message()), ctx));
         assertEquals(-1, ctx.getLuaResult());
-        assertTrue(reservations.hasSuccessMarker(orderId));
+        assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
         assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
         assertEquals(0, reservations.reserve(message()));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
 
-    @Test void expiredMarkerRollsBackCheckButNeverReDeductsOwnedOrder() throws Exception {
+    @Test void expiredLegacyMarkerDoesNotAffectCheckCallbackOrConsumption() throws Exception {
         reserve(message());
-        redis.expire(SECKILL_TXN_KEY + orderId, 1, TimeUnit.MILLISECONDS);
+        redis.opsForValue().set(LEGACY_TXN_KEY + orderId, "1", 1, TimeUnit.MILLISECONDS);
         Thread.sleep(20);
-        assertFalse(reservations.hasSuccessMarker(orderId));
-        assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
-        assertEquals(-1, reservations.reserve(message()));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
+        assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        assertEquals(0, reservations.reserve(message()));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-        service.createOrderFromMQ(message()); // A previously committed CREATE still consumes after expiry.
+        service.createOrderFromMQ(message());
         service.createOrderFromMQ(message());
         assertEquals(1, count()); assertEquals(9, stock());
     }
 
     @Test void redisFailureDuringCheckOrCallbackReturnsUnknown() {
         SeckillReservationService unavailable = mock(SeckillReservationService.class);
-        when(unavailable.hasSuccessMarker(orderId)).thenThrow(new SeckillUnavailableException("Redis unavailable"));
+        when(unavailable.findOriginalOrderId(voucherId, userId)).thenThrow(new SeckillUnavailableException("Redis unavailable"));
         when(unavailable.reserve(any())).thenThrow(new SeckillUnavailableException("Redis unavailable"));
         assertEquals(LocalTransactionState.UNKNOW, listener(unavailable).checkLocalTransaction(payload(message())));
         assertEquals(LocalTransactionState.UNKNOW,
@@ -133,25 +131,26 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
                 "redis.call('DECR',KEYS[1]); return redis.error_reply('injected runtime failure')", Long.class);
         assertThrows(RuntimeException.class, () -> redis.execute(failAfterStock,
                 Collections.singletonList(SECKILL_STOCK_KEY + voucherId)));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         // Accepted simplification boundary: absence is not proof that no mutation happened.
         assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
         assertEquals(0, count());
     }
 
-    @Test void partialOwnershipWithoutMarkerIsNotReReserved() {
+    @Test void ownershipWithoutLegacyMarkerIsCompleteReservationEvidence() {
         redis.opsForValue().set(SECKILL_STOCK_KEY + voucherId, "9");
         redis.opsForHash().put(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId), String.valueOf(orderId));
-        assertEquals(-1, reservations.reserve(message()));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertEquals(0, reservations.reserve(message()));
+        assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
 
     @Test void nonCanonicalStockIsRejectedBeforeAnyReservationWrite() {
         redis.opsForValue().set(SECKILL_STOCK_KEY + voucherId, "01");
         assertEquals(-1, reservations.reserve(message()));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertEquals("01", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
         assertNull(reservations.findOriginalOrderId(voucherId, userId));
     }
@@ -159,23 +158,24 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
     @Test void wrongKeyTypeIsRejectedBeforeInventoryMutation() {
         redis.opsForValue().set(SECKILL_CLAIM_OWNER_KEY + voucherId, "invalid");
         assertEquals(-1, reservations.reserve(message()));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
         assertFalse(Boolean.TRUE.equals(redis.hasKey(legacyPurchaserKey())));
     }
 
-    @Test void oldHashMarkerIsNotOverwrittenOrSilentlyCommitted() {
-        redis.opsForHash().put(SECKILL_TXN_KEY + orderId, "state", "RESERVED");
-        assertEquals(-1, reservations.reserve(message()));
-        assertEquals(LocalTransactionState.UNKNOW, listener(reservations).checkLocalTransaction(payload(message())));
-        assertEquals("RESERVED", redis.opsForHash().get(SECKILL_TXN_KEY + orderId, "state"));
-        assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    @Test void oldHashMarkerIsIgnoredAndCannotAuthorizeCommit() {
+        redis.opsForHash().put(LEGACY_TXN_KEY + orderId, "state", "RESERVED");
+        assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        assertEquals(0, reservations.reserve(message()));
+        assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        assertEquals("RESERVED", redis.opsForHash().get(LEGACY_TXN_KEY + orderId, "state"));
+        assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
 
     @Test void malformedOwnerIdIsRejectedBeforeMutation() {
         redis.opsForHash().put(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId), "not-an-order");
         assertEquals(-1, reservations.reserve(message()));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
 
@@ -183,7 +183,7 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         VoucherOrder different = new VoucherOrder().setId(orderId + 1).setUserId(userId).setVoucherId(voucherId);
         assertEquals(LocalTransactionState.UNKNOW,
                 listener(reservations).executeLocalTransaction(payload(message()), new SeckillTxContext(different)));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
 
@@ -220,19 +220,85 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
         assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
     }
 
-    @Test void successMarkerCannotHideMissingOrConflictingHashOwnership() {
+    @Test void lostOwnershipCanCauseAnotherDeductionAndRequiresManualReview() {
         reserve(message());
         redis.opsForHash().delete(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId));
-        assertEquals(-1, reservations.reserve(message()));
-        redis.opsForHash().put(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId), String.valueOf(orderId + 1));
-        assertEquals(-1, reservations.reserve(message()));
+        assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        // Accepted boundary: with the sole evidence lost, a replay looks like a new reservation.
+        assertEquals(0, reservations.reserve(message()));
+        assertEquals("8", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test void conflictingOrderCannotCommitOrDeduct() {
+        reserve(message());
+        VoucherOrder other = message().setId(orderId + 1);
+        assertEquals(2, reservations.reserve(other));
+        MessageExt recent = payload(other);
+        recent.setBornTimestamp(System.currentTimeMillis());
+        assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(recent));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test void sameOrderIdForDifferentUserOrVoucherCannotCommit() {
+        reserve(message());
+        assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(
+                payload(message().setUserId(userId + 1))));
+        assertEquals(LocalTransactionState.ROLLBACK_MESSAGE, listener(reservations).checkLocalTransaction(
+                payload(message().setVoucherId(voucherId + 1))));
+        assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test void originalCallbackStillSucceedsWhenStockIsExhausted() {
+        redis.opsForValue().set(SECKILL_STOCK_KEY + voucherId, "1");
+        reserve(message());
+        assertEquals(0, reservations.reserve(message()));
+        assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        assertEquals("0", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test void invalidHashEvidenceMakesCheckUnknown() {
+        for (String invalid : Arrays.asList("not-an-order", "0", "01", "+1", "9223372036854775808")) {
+            redis.opsForHash().put(SECKILL_CLAIM_OWNER_KEY + voucherId, String.valueOf(userId), invalid);
+            assertEquals(LocalTransactionState.UNKNOW, listener(reservations).checkLocalTransaction(payload(message())));
+        }
+        redis.delete(SECKILL_CLAIM_OWNER_KEY + voucherId);
+        redis.opsForValue().set(SECKILL_CLAIM_OWNER_KEY + voucherId, "wrong-type");
+        assertEquals(LocalTransactionState.UNKNOW, listener(reservations).checkLocalTransaction(payload(message())));
+        assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test void checkGraceMustBeNonnegative() {
+        SeckillTransactionListener checks = listener(reservations);
+        ReflectionTestUtils.setField(checks, "checkGraceMs", -1L);
+        assertThrows(IllegalArgumentException.class, checks::validateConfiguration);
+        ReflectionTestUtils.setField(checks, "checkGraceMs", 0L);
+        assertDoesNotThrow(checks::validateConfiguration);
+    }
+
+    @Test void cancelledOrderCallbackAndConsumptionReplayCannotReserveOrRefundAgain() {
+        service.createOrderFromMQ(reservedMessage());
+        jdbc.update("UPDATE tb_voucher_order SET create_time=DATE_SUB(CURRENT_TIMESTAMP,INTERVAL 16 MINUTE) WHERE id=?", orderId);
+        service.cancelTimeoutOrder(orderId);
+        worker.process(orderId);
+        assertEquals(com.hmdp.entity.OrderStockCompensation.DONE, tasks.selectById(orderId).getStatus());
+        assertEquals(LocalTransactionState.COMMIT_MESSAGE,
+                listener(reservations).executeLocalTransaction(payload(message()), new SeckillTxContext(message())));
+        assertEquals(LocalTransactionState.COMMIT_MESSAGE, listener(reservations).checkLocalTransaction(payload(message())));
+        service.createOrderFromMQ(message());
+        assertEquals(1L, redisReturns.returnStock(tasks.selectById(orderId)));
+        assertEquals(ORDER_STATUS_CANCELLED, orders.selectById(orderId).getStatus());
+        assertEquals(1, count()); assertEquals(10, stock());
+        assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+        assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
     }
 
     @Test void expiringHashCannotAuthorizeLookupOrReservation() {
         reserve(message());
         redis.expire(SECKILL_CLAIM_OWNER_KEY + voucherId, 1, TimeUnit.HOURS);
         assertThrows(SeckillUnavailableException.class, () -> reservations.findOriginalOrderId(voucherId, userId));
+        assertEquals(LocalTransactionState.UNKNOW, listener(reservations).checkLocalTransaction(payload(message())));
         assertEquals(-1, reservations.reserve(message()));
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
     }
@@ -256,7 +322,7 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
             assertEquals(1, successful);
             Long original = reservations.findOriginalOrderId(voucherId, userId);
             assertNotNull(original);
-            assertTrue(reservations.hasSuccessMarker(original));
+            assertFalse(redis.hasKey(LEGACY_TXN_KEY + original));
             assertEquals(1L, redis.opsForHash().size(SECKILL_CLAIM_OWNER_KEY + voucherId));
             assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
             assertFalse(redis.hasKey(legacyPurchaserKey()));
@@ -274,7 +340,7 @@ class SeckillTransactionIntegrationTest extends OrderIntegrationSupport {
 
     VoucherOrder extraOrder() {
         VoucherOrder order = new VoucherOrder().setId(IDS.incrementAndGet()).setUserId(IDS.incrementAndGet()).setVoucherId(voucherId);
-        extraKeys.add(SECKILL_TXN_KEY + order.getId());
+        extraKeys.add(LEGACY_TXN_KEY + order.getId());
         return order;
     }
 

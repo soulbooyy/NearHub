@@ -92,6 +92,7 @@ abstract class OrderIntegrationSupport {
     @Autowired VoucherOrderCancellationService cancellation;
     @MockBean RocketMQProducer producer;
 
+    static final String LEGACY_TXN_KEY = "seckill:txn:"; // Retired key: fixtures and no-write assertions only.
     static final AtomicLong IDS = new AtomicLong(System.currentTimeMillis() * 1000);
     long voucherId, userId, orderId;
 
@@ -116,7 +117,7 @@ abstract class OrderIntegrationSupport {
         jdbc.update("DELETE FROM tb_voucher_order WHERE voucher_id=?", voucherId);
         jdbc.update("DELETE FROM tb_seckill_voucher WHERE voucher_id=?", voucherId);
         redis.delete(Arrays.asList(SECKILL_STOCK_KEY + voucherId, legacyPurchaserKey(),
-                SECKILL_CLAIM_OWNER_KEY + voucherId, SECKILL_TXN_KEY + (orderId + 1), SECKILL_TXN_KEY + orderId,
+                SECKILL_CLAIM_OWNER_KEY + voucherId, LEGACY_TXN_KEY + (orderId + 1), LEGACY_TXN_KEY + orderId,
                 SECKILL_STOCK_RETURNED_KEY + orderId, SECKILL_STOCK_RETURNED_KEY + (orderId + 1)));
     }
 
@@ -139,6 +140,7 @@ abstract class OrderIntegrationSupport {
 
     void reserve(VoucherOrder order) {
         assertEquals(0, reservations.reserve(order));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + order.getId()), "Reservation must not create a transaction marker");
         assertFalse(redis.hasKey(legacyPurchaserKey()), "Reservation must not create a purchase Set");
     }
 

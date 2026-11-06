@@ -12,6 +12,7 @@ import org.apache.rocketmq.common.message.MessageExt;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
+import javax.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import static com.hmdp.service.SeckillReservationService.*;
@@ -21,6 +22,11 @@ import static com.hmdp.service.SeckillReservationService.*;
 public class SeckillTransactionListener implements TransactionListener {
     @Resource private SeckillReservationService reservations;
     @Value("${seckill.transaction.check-grace-ms:60000}") private long checkGraceMs = 60000;
+
+    @PostConstruct
+    public void validateConfiguration() {
+        if (checkGraceMs < 0) throw new IllegalArgumentException("check-grace-ms must be nonnegative");
+    }
 
     @Override
     public LocalTransactionState executeLocalTransaction(Message msg, Object arg) {
@@ -44,13 +50,16 @@ public class SeckillTransactionListener implements TransactionListener {
     public LocalTransactionState checkLocalTransaction(MessageExt msg) {
         try {
             VoucherOrder order = decode(msg);
-            if (reservations.hasSuccessMarker(order.getId())) return LocalTransactionState.COMMIT_MESSAGE;
+            Long original = reservations.findOriginalOrderId(order.getVoucherId(), order.getUserId());
+            if (Objects.equals(original, order.getId())) return LocalTransactionState.COMMIT_MESSAGE;
+            // Another valid order owns this user's purchase; this message must not be committed.
+            if (original != null) return LocalTransactionState.ROLLBACK_MESSAGE;
             long born = msg.getBornTimestamp();
             long now = System.currentTimeMillis();
             // A bounded grace uses the original MQ timestamp; no persisted preparation state.
             // It reduces early checks, but does not fence a callback that resumes after rollback.
             if (born <= 0 || born > now || now - born < checkGraceMs) return LocalTransactionState.UNKNOW;
-            log.warn("SECKILL_MARKER_MISSING_ROLLBACK: orderId={}, ageMs={}; expiry/loss can hide a successful reservation",
+            log.warn("SECKILL_OWNERSHIP_MISSING_ROLLBACK: orderId={}, ageMs={}; partial writes/data loss require manual review",
                     order.getId(), now - born);
             return LocalTransactionState.ROLLBACK_MESSAGE;
         }

@@ -20,10 +20,10 @@ import static org.mockito.Mockito.*;
 import static org.mockito.AdditionalAnswers.delegatesTo;
 
 class OrderConsumptionIntegrationTest extends OrderIntegrationSupport {
-    @Test void committedMessageCanCreateAfterMarkerExpiryAndReplayWithoutRedis() {
+    @Test void committedMessageCanCreateWithoutTransactionMarkerAndReplayWithoutRedis() {
         VoucherOrder order = reservedMessage();
-        redis.delete(SECKILL_TXN_KEY + orderId);
-        service.createOrderFromMQ(order); // Ownership, not the short-lived marker, authorizes first consumption.
+        redis.delete(LEGACY_TXN_KEY + orderId);
+        service.createOrderFromMQ(order); // Permanent ownership authorizes first consumption.
         com.hmdp.service.SeckillReservationService unavailable = mock(com.hmdp.service.SeckillReservationService.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "reservations", unavailable);
         try {
@@ -196,7 +196,6 @@ class OrderConsumptionIntegrationTest extends OrderIntegrationSupport {
         }
         assertEquals(0, count()); assertEquals(0, stock());
         assertEquals("9", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-        assertTrue(reservations.hasSuccessMarker(orderId));
         assertEquals(orderId, reservations.findOriginalOrderId(voucherId, userId));
     }
 

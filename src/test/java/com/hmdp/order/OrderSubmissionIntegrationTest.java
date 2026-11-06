@@ -70,7 +70,7 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
         SendResult sent = new SendResult();
         sent.setSendStatus(SendStatus.SEND_OK);
         when(producer.sendOrderCreateInTransaction(any(), any())).thenAnswer(call -> {
-            assertFalse(reservations.hasSuccessMarker(orderId));
+            assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
             assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
             SeckillTxContext context = call.getArgument(1);
             context.setLuaResult(reservations.reserve(message()));
@@ -110,9 +110,8 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
         assertEquals(0, count());
         assertEquals(10, stock());
         assertEquals("10", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         assertFalse(Boolean.TRUE.equals(redis.hasKey(SECKILL_CLAIM_OWNER_KEY + voucherId)));
-        assertFalse(reservations.hasSuccessMarker(orderId));
     }
 
     @Test void lostSubmissionResponseReturnsOriginalIdAndVoucherQueryFindsIt() throws Exception {
@@ -135,7 +134,7 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
         when(producer.sendOrderCreateInTransaction(any(), any())).thenThrow(new IllegalStateException("send failed"));
         mvc.perform(post("/voucher-order/seckill/" + voucherId).header("authorization", token))
                 .andExpect(status().isAccepted()).andExpect(jsonPath("$.data.orderId").value(orderId));
-        assertFalse(reservations.hasSuccessMarker(orderId));
+        assertFalse(redis.hasKey(LEGACY_TXN_KEY + orderId));
         mvc.perform(get("/voucher-order/seckill/result/" + orderId).header("authorization", token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("UNKNOWN"));
         mvc.perform(get("/voucher-order/seckill/result/by-voucher/" + voucherId).header("authorization", token))
@@ -158,7 +157,7 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
 
     @Test void committedOrderIsQueryableEvenIfRedisTransactionRecordIsLost() throws Exception {
         service.createOrderFromMQ(reservedMessage());
-        redis.delete(SECKILL_TXN_KEY + orderId);
+        redis.delete(LEGACY_TXN_KEY + orderId);
         mvc.perform(get("/voucher-order/seckill/result/" + orderId).header("authorization", token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SUCCESS"));
         mvc.perform(get("/voucher-order/seckill/result/by-voucher/" + voucherId).header("authorization", token))
@@ -182,10 +181,10 @@ class OrderSubmissionIntegrationTest extends OrderIntegrationSupport {
         assertEquals(ORDER_STATUS_UNPAID, orders.selectById(orderId).getStatus());
     }
 
-    @Test void originalOwnershipWithMissingRecordReturnsUnknownRatherThanNotFound() throws Exception {
-        reserve(message()); redis.delete(SECKILL_TXN_KEY + orderId);
+    @Test void originalOwnershipWithoutLegacyMarkerReturnsProcessing() throws Exception {
+        reserve(message()); redis.delete(LEGACY_TXN_KEY + orderId);
         mvc.perform(get("/voucher-order/seckill/result/by-voucher/" + voucherId).header("authorization", token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("UNKNOWN"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PROCESSING"))
                 .andExpect(jsonPath("$.data.orderId").value(orderId));
     }
 }
