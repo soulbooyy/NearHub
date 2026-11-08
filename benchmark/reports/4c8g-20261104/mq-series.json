@@ -1,0 +1,44 @@
+[
+  {
+    "recorded_at": 1793800491.178525,
+    "delivered_backlog": 47,
+    "consume_tps": 0.0,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  },
+  {
+    "recorded_at": 1793800563.32817,
+    "delivered_backlog": 99896,
+    "consume_tps": 168.96,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  },
+  {
+    "recorded_at": 1793800616.6323452,
+    "delivered_backlog": 119776,
+    "consume_tps": 269.1,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  },
+  {
+    "recorded_at": 1793800667.455193,
+    "delivered_backlog": 102470,
+    "consume_tps": 348.8,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  },
+  {
+    "recorded_at": 1793800719.48903,
+    "delivered_backlog": 85109,
+    "consume_tps": 336.0,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  },
+  {
+    "recorded_at": 1793800769.49909,
+    "delivered_backlog": 68019,
+    "consume_tps": 341.87,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  }
+]

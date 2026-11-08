@@ -1,0 +1,43 @@
+{
+  "state": "KNOWN_CREATES_PERSISTED_WITH_UNRESOLVED_HTTP",
+  "passed": false,
+  "orders": 147231,
+  "claims": 147231,
+  "active": 147231,
+  "cancelled": 0,
+  "mysql_stock": 352769,
+  "redis_stock": 352769,
+  "creation_problems": [
+    "unresolved_http_outcomes"
+  ],
+  "refund_audit_performed": false,
+  "known_create_consecutive_samples": 3,
+  "snapshot_at": 1793801025.884932,
+  "seconds_after_last_http": 453.92293214797974,
+  "accepted_missing_count": 0,
+  "resolved_uncertain_count": 100,
+  "resolved_uncertain_categories": {
+    "transport_error": 100
+  },
+  "unresolved_count": 78,
+  "unresolved_categories": {
+    "pending": 78
+  },
+  "original_window": {
+    "state": "WAITING_OR_UNRESOLVED",
+    "passed": false,
+    "orders": 73437,
+    "claims": 147231,
+    "snapshot_at": 1793800744.3891242
+  },
+  "final_mq": {
+    "delivered_backlog": 0,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  },
+  "later_forensic_diagnosis": {
+    "date": "2026-11-07",
+    "broker_rejected_before_persistence": 78,
+    "historical_http_results_unchanged": true
+  }
+}

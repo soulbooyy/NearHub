@@ -1,0 +1,8 @@
+{
+  "threads": 100,
+  "rampup": 30,
+  "duration": 60,
+  "target_rps": 0,
+  "smoke": false,
+  "create_only": true
+}

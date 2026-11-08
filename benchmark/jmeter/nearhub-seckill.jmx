@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="NearHub real seckill" enabled="true">
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments"><collectionProp name="Arguments.arguments"/></elementProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Fresh identity per request" enabled="true">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp><intProp name="LoopController.loops">-1</intProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(threads,100)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,30)}</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${__groovy((props.getProperty('rampup'\,'30') as int) + (props.getProperty('duration'\,'60') as int))}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+        <!-- Reuse TCP connections; CSV still changes authorization identity on EVERY request. -->
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+      </ThreadGroup>
+      <hashTree>
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Record measurement epoch once" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="filename"/>
+          <stringProp name="script">synchronized (props) { if (props.get('nearhub.window.started') == null) { props.put('nearhub.window.started', 'true'); def path = props.getProperty('windowFile'); if (path) new File(path).text = Long.toString(ctx.getThread().getStartTime()); } }</stringProp>
+        </JSR223PreProcessor><hashTree/>
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="One-use tokens; shared cursor" enabled="true">
+          <stringProp name="filename">${__P(tokens,benchmark/data/tokens.csv)}</stringProp>
+          <stringProp name="fileEncoding">UTF-8</stringProp><stringProp name="variableNames">token,userId</stringProp>
+          <boolProp name="ignoreFirstLine">true</boolProp><stringProp name="delimiter">,</stringProp>
+          <boolProp name="quotedData">false</boolProp><boolProp name="recycle">false</boolProp>
+          <boolProp name="stopThread">true</boolProp><stringProp name="shareMode">shareMode.all</stringProp>
+        </CSVDataSet><hashTree/>
+        <ConfigTestElement guiclass="HttpDefaultsGui" testclass="ConfigTestElement" testname="HTTP defaults" enabled="true">
+          <stringProp name="HTTPSampler.domain">${__P(host,127.0.0.1)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,8081)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.connect_timeout">3000</stringProp><stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+          <stringProp name="HTTPSampler.implementation">HttpClient4</stringProp>
+        </ConfigTestElement><hashTree/>
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Real authentication" enabled="true">
+          <collectionProp name="HeaderManager.headers"><elementProp name="" elementType="Header"><stringProp name="Header.name">authorization</stringProp><stringProp name="Header.value">${token}</stringProp></elementProp></collectionProp>
+        </HeaderManager><hashTree/>
+        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Optional target RPS" enabled="true">
+          <stringProp name="IfController.condition">${__groovy((props.getProperty('targetRps'\,'0') as double) &gt; 0)}</stringProp>
+          <boolProp name="IfController.evaluateAll">false</boolProp><boolProp name="IfController.useExpression">true</boolProp>
+        </IfController>
+        <hashTree>
+          <TestAction guiclass="TestActionGui" testclass="TestAction" testname="Pacing only (not an HTTP sample)" enabled="true"><intProp name="ActionProcessor.action">1</intProp><intProp name="ActionProcessor.target">0</intProp><stringProp name="ActionProcessor.duration">0</stringProp></TestAction>
+          <hashTree><ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Shared aggregate pacing" enabled="true"><stringProp name="throughput">${__groovy((props.getProperty('targetRps'\,'0') as double) * 60)}</stringProp><intProp name="calcMode">4</intProp></ConstantThroughputTimer><hashTree/></hashTree>
+        </hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="POST seckill" enabled="true">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments"><collectionProp name="Arguments.arguments"/></elementProp>
+          <stringProp name="HTTPSampler.path">/voucher-order/seckill/${__P(voucherId,0)}</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp><boolProp name="HTTPSampler.follow_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.auto_redirects">false</boolProp><boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Business classification" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="filename">${__P(classifier,benchmark/jmeter/classify.groovy)}</stringProp><stringProp name="script"/>
+          </JSR223PostProcessor><hashTree/>
+          <JSR223Assertion guiclass="TestBeanGUI" testclass="JSR223Assertion" testname="Require confirmed reservation" enabled="true">
+            <stringProp name="scriptLanguage">groovy</stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="filename"/>
+            <stringProp name="script">if (vars.get('category') != 'accepted') { AssertionResult.setFailure(true); AssertionResult.setFailureMessage(vars.get('category')); }</stringProp>
+          </JSR223Assertion><hashTree/>
+        </hashTree>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

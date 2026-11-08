@@ -1,0 +1,16 @@
+{
+  "published_scope": "Only formal-create-only-100-20261104-2155 and its 5-request preflight smoke; no other performance runs",
+  "sample_transformation": "All original request rows in original order; field allowlist; sample_index is 1-based JTL data-row number; no user/order/token/URL/host-path fields",
+  "original_inputs_sha256": {
+    "requests.jtl": "883bf4142ac2cc15a4dcf50163c57342c0d0ecc51f2b7ee05b30a819e127c858",
+    "app.log": "7b8686c6859ed862f6d0b852c52009f574295a9ca599f9e2c59a2066ee3c76a7",
+    "orders-create.csv": "bfd7e81085d41fff8c74ad36c5a8d57ec5bbe4a56b1af79c32e8188d0f0fd411",
+    "claims-create.csv": "fc7f315d64d311ae2368c5b7262d29e6245cd759761d10443a7b6cfb2d595cd0",
+    "verification-create.json": "1c556a87328fa414c7daa0da003737218037def18e6defe61a19dedbca2b1aa9",
+    "inputs/nearhub-seckill.jmx": "48ae527d5e577ed15663ee2c2698dddb80992f03ddae88809e1c6334e0262152",
+    "inputs/bench.py": "ca69bdc4794029a6c9a142a10edf7733c3ee8ff3259eba7dad901de6e355848e",
+    "inputs/stats.py": "9bdd94b06c2376136cc14a95579ab84aeeaafd96748dab63b7ed1989a5fc840e"
+  },
+  "private_artifacts": "Tokens, credentials, original JTL/logs, identity CSVs, runtime archives and raw CommitLog remain local",
+  "commitlog_audit_note": "Offline scan of stopped Broker, original range [0,126364614), all 441708 body CRCs validated; raw contents are not published"
+}

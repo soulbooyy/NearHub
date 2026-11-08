@@ -1,0 +1,62 @@
+{
+  "run_id": "formal-create-only-100-20261104-2155",
+  "parameters": {
+    "threads": 100,
+    "rampup": 30,
+    "duration": 60,
+    "target_rps": 0,
+    "smoke": false,
+    "create_only": true
+  },
+  "all": {
+    "seconds": 89.967,
+    "completed": 147309,
+    "http_completed": 147209,
+    "categories": {
+      "accepted": 147131,
+      "pending": 78,
+      "transport_error": 100
+    },
+    "attempt_qps": 1637.3670345793457,
+    "http_qps": 1636.2555159113897,
+    "accepted_qps": 1635.388531350384,
+    "avg_ms": 44.29218322249319,
+    "p95_ms": 87,
+    "p99_ms": 135,
+    "attempt_avg_ms": 51.051436096911935,
+    "attempt_p95_ms": 88,
+    "attempt_p99_ms": 137,
+    "anomaly_rate": 0.0006788451486331453,
+    "nonaccepted_rate": 0.00120834436456696
+  },
+  "steady": {
+    "seconds": 60.0,
+    "completed": 101404,
+    "http_completed": 101304,
+    "categories": {
+      "accepted": 101226,
+      "pending": 78,
+      "transport_error": 100
+    },
+    "attempt_qps": 1690.0666666666666,
+    "http_qps": 1688.4,
+    "accepted_qps": 1687.1,
+    "avg_ms": 49.142077311853434,
+    "p95_ms": 93,
+    "p99_ms": 145,
+    "attempt_avg_ms": 58.956421837402864,
+    "attempt_p95_ms": 93,
+    "attempt_p99_ms": 150,
+    "anomaly_rate": 0.0009861543923316634,
+    "nonaccepted_rate": 0.0017553548183503187,
+    "mysql_observed_tps": 136.70135716502884,
+    "mysql_observed_seconds": 51.608851194381714
+  },
+  "stable_start_ms": 1793800511872,
+  "stable_end_ms": 1793800571872,
+  "token_exhausted_early": false,
+  "unique_users": true,
+  "steady_window_covered": true,
+  "performance_window_valid": false,
+  "warning": "A publishable duration does not prove stable capacity; inspect backlog trends, errors, client CPU, and repeat runs."
+}

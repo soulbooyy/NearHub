@@ -1,0 +1,40 @@
+{
+  "decoder": "RocketMQ MessageDecoder 4.9.7",
+  "records": 441708,
+  "body_crc_checked": 441708,
+  "max_valid_end_offset": 126364614,
+  "topics": {
+    "RMQ_SYS_TRANS_HALF_TOPIC": 147236,
+    "RMQ_SYS_TRANS_OP_HALF_TOPIC": 147236,
+    "order-seckill-topic": 147236
+  },
+  "files": [
+    {
+      "name": "00000000000000000000",
+      "bytes": 1073741824,
+      "records": 441708,
+      "valid_bytes": 126364614,
+      "unused_tail_all_zero": true
+    },
+    {
+      "name": "00000000001073741824",
+      "bytes": 1073741824,
+      "records": 0,
+      "valid_bytes": 0,
+      "unused_tail_all_zero": true
+    }
+  ],
+  "pending_ids": 78,
+  "pending_hits": [],
+  "expected_persisted_ids": 147231,
+  "positive_control_coverage": {
+    "RMQ_SYS_TRANS_HALF_TOPIC": {
+      "unique_order_ids": 147236,
+      "persisted_orders_matched": 147231
+    },
+    "order-seckill-topic": {
+      "unique_order_ids": 147236,
+      "persisted_orders_matched": 147231
+    }
+  }
+}

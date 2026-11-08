@@ -36,3 +36,12 @@ build/
 .env
 .local/
 logs/
+
+### Isolated performance benchmark (credentials, identities and raw evidence) ###
+benchmark/.env
+benchmark/.runtime/
+benchmark/data/*
+!benchmark/data/.gitkeep
+benchmark/results/*
+!benchmark/results/.gitkeep
+benchmark/**/__pycache__/

@@ -1,0 +1,81 @@
+{
+  "cpu": "Apple M5",
+  "host_cores": 10,
+  "host_memory_gib": 32,
+  "docker_vcpus": 4,
+  "docker_configured_memory_gib": 8,
+  "docker_engine_memory_bytes": 8322555904,
+  "docker_engine_version": "29.4.3",
+  "timezone": "Asia/Hong_Kong",
+  "application_location": "host",
+  "jmeter_location": "host",
+  "spring_boot": "2.3.12.RELEASE",
+  "application_jdk": "Zulu aarch64 8u504",
+  "application_jvm": {
+    "initial_heap_bytes": 536870912,
+    "max_heap_bytes": 8589934592,
+    "gc": "Parallel",
+    "explicit_options": []
+  },
+  "jmeter": "5.6.3",
+  "jmeter_java": "17.0.20.1",
+  "jmeter_heap": "-Xms256m -Xmx1g",
+  "mysql": "8.0.45",
+  "redis": "7.2.16",
+  "rocketmq": "4.9.7",
+  "rocketmq_amd64_emulation": true,
+  "application_instances": 1,
+  "broker_instances": 1,
+  "broker_heap": "-Xms256m -Xmx256m -Xmn128m",
+  "nameserver_heap": "-Xms128m -Xmx128m -Xmn64m",
+  "broker_role": "ASYNC_MASTER",
+  "flush_disk_type": "ASYNC_FLUSH",
+  "other_workloads_present": true,
+  "containers": [
+    {
+      "service": "broker",
+      "image": "apache/rocketmq:4.9.7",
+      "image_id": "sha256:c0ffc9f5abd3ee8fb59682f9f2c84abba031f0a83500d60a7330ade2d9b7ccca",
+      "cpu_quota": 0,
+      "nano_cpus": 0,
+      "memory": 0
+    },
+    {
+      "service": "broker-store-init",
+      "image": "apache/rocketmq:4.9.7",
+      "image_id": "sha256:c0ffc9f5abd3ee8fb59682f9f2c84abba031f0a83500d60a7330ade2d9b7ccca",
+      "cpu_quota": 0,
+      "nano_cpus": 0,
+      "memory": 0
+    },
+    {
+      "service": "mysql",
+      "image": "mysql:8.0.45",
+      "image_id": "sha256:4af1f8815716546f5b12410f7621f37f93db8dd11a184706ef59111930b8c2ff",
+      "cpu_quota": 0,
+      "nano_cpus": 0,
+      "memory": 0
+    },
+    {
+      "service": "namesrv",
+      "image": "apache/rocketmq:4.9.7",
+      "image_id": "sha256:c0ffc9f5abd3ee8fb59682f9f2c84abba031f0a83500d60a7330ade2d9b7ccca",
+      "cpu_quota": 0,
+      "nano_cpus": 0,
+      "memory": 0
+    },
+    {
+      "service": "redis",
+      "image": "redis:7.2",
+      "image_id": "sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c",
+      "cpu_quota": 0,
+      "nano_cpus": 0,
+      "memory": 0
+    }
+  ],
+  "measurement_git_head": "90c833307378840d8e03d6f62bac292d5def295c",
+  "matching_business_source_commit": "81f8075297b5ade41a42b862d8fb2d0af753d6c8",
+  "source_sha256": "3db38c67767e1dfbd628ad18f2bda7076314457d9d434ed448b989f5762527e3",
+  "application_jar_sha256": "d89f28da8a209acf39e386e1a1d5fd04184cca76b3161a7b1aa31d03b11a0795",
+  "external_overlay_sha256": "f44d4d6cc6ae903e66f937aee9994d25b589229ac82e815d44d65a73aae87c55"
+}

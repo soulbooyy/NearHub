@@ -1,0 +1,19 @@
+{
+  "run_id": "formal-create-only-100-20261104-2155",
+  "voucher_id": 14,
+  "users": 500000,
+  "initial_stock": 500000,
+  "identity_policy": "One distinct synthetic user/token per request; no reuse; stop at EOF",
+  "unique_users": true,
+  "token_exhausted_early": false,
+  "create_only": true,
+  "smoke_requests": 5,
+  "default_observation_seconds": 180,
+  "extended_observation_limit_seconds": 900,
+  "known_create_consecutive_samples": 3,
+  "first_known_complete_snapshot_at": 1793800989.806803,
+  "last_snapshot_at": 1793801025.884932,
+  "last_snapshot_seconds_after_http": 453.92293214797974,
+  "monitor_seconds": 5,
+  "mq_monitor_interval_seconds": 30
+}

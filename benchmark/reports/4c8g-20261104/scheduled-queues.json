@@ -1,0 +1,95 @@
+{
+  "diagnostic_succeeded": true,
+  "queues": [
+    {
+      "queue_id": 0,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 1,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 2,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 3,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 4,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 5,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 6,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 7,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 8,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 9,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 10,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 11,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 12,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 13,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 14,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 15,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 16,
+      "min_offset": 0,
+      "max_offset": 0
+    },
+    {
+      "queue_id": 17,
+      "min_offset": 0,
+      "max_offset": 0
+    }
+  ]
+}
