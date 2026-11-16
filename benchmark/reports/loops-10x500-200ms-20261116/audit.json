@@ -1,0 +1,116 @@
+{
+  "run_id": "loops-10x500-200ms-20261116",
+  "voucher": 33,
+  "broker_wait_ms": 200,
+  "parameters": {
+    "threads": 10,
+    "rampup": 0,
+    "duration": 60,
+    "target_rps": 0,
+    "smoke": false,
+    "create_only": true,
+    "load_mqadmin": "on",
+    "loops": 500,
+    "create_wait_seconds": 120,
+    "mode": "burst"
+  },
+  "burst": {
+    "seconds": 8.582,
+    "completed": 5000,
+    "http_completed": 5000,
+    "categories": {
+      "accepted": 5000
+    },
+    "attempt_qps": 582.6147751106968,
+    "http_qps": 582.6147751106968,
+    "accepted_qps": 582.6147751106968,
+    "avg_ms": 16.4556,
+    "p95_ms": 53,
+    "p99_ms": 102,
+    "attempt_avg_ms": 16.4556,
+    "attempt_p95_ms": 53,
+    "attempt_p99_ms": 102,
+    "anomaly_rate": 0.0,
+    "nonaccepted_rate": 0.0,
+    "first_start_ms": 1794841002751,
+    "last_completion_ms": 1794841011333,
+    "deadline_ms": 1794841062442,
+    "expected": 5000,
+    "started": 5000,
+    "distinct_started": 5000,
+    "completed_by_deadline": 5000,
+    "distinct_completed": 5000,
+    "complete": true,
+    "incomplete_reasons": [],
+    "read_timeouts": 0,
+    "completed_per_thread": {
+      "Fresh identity per request 1-1": 500,
+      "Fresh identity per request 1-10": 500,
+      "Fresh identity per request 1-2": 500,
+      "Fresh identity per request 1-3": 500,
+      "Fresh identity per request 1-4": 500,
+      "Fresh identity per request 1-5": 500,
+      "Fresh identity per request 1-6": 500,
+      "Fresh identity per request 1-7": 500,
+      "Fresh identity per request 1-8": 500,
+      "Fresh identity per request 1-9": 500
+    }
+  },
+  "accepted_p99_ms": 102,
+  "distinct_threads": 10,
+  "distinct_users": 5000,
+  "outcomes": {
+    "accepted_persisted": 5000
+  },
+  "rejected_wait_ms": [],
+  "mqadmin_overlap_s": {
+    "progress": 5.026891231536865,
+    "topics": 3.555103063583374
+  },
+  "native_admin_sessions_started_during_load": 2,
+  "native_admin_sessions_active_at_first_request": 0,
+  "orders": 5000,
+  "redis_claims": 5000,
+  "remaining_stock": 0,
+  "auto_state": "CREATE_PERSISTED",
+  "auto_unresolved": 0,
+  "raw_exit": 0,
+  "final_mq": {
+    "delivered_backlog": 0,
+    "retry_messages": 0,
+    "dlq_messages": 0
+  },
+  "commitlog": {
+    "decoder": "RocketMQ MessageDecoder 4.9.7",
+    "records": 15018,
+    "body_crc_checked": 15018,
+    "max_valid_end_offset": 4289032,
+    "topics": {
+      "RMQ_SYS_TRANS_HALF_TOPIC": 5006,
+      "RMQ_SYS_TRANS_OP_HALF_TOPIC": 5006,
+      "order-seckill-topic": 5006
+    },
+    "files": [
+      {
+        "name": "00000000000000000000",
+        "bytes": 4289032,
+        "records": 15018,
+        "valid_bytes": 4289032,
+        "unused_tail_all_zero": true
+      }
+    ],
+    "pending_ids": 0,
+    "pending_hits": [],
+    "expected_persisted_ids": 5000,
+    "positive_control_coverage": {
+      "RMQ_SYS_TRANS_HALF_TOPIC": {
+        "unique_order_ids": 5006,
+        "persisted_orders_matched": 5000
+      },
+      "order-seckill-topic": {
+        "unique_order_ids": 5006,
+        "persisted_orders_matched": 5000
+      }
+    }
+  }
+}
